@@ -1,0 +1,52 @@
+fast_dev_run = false
+random_seed = 2024
+tune = false
+refit = true
+verbose = false
+train_size = 0.8
+n_trials = 64
+method = "lm"
+n_components = 20
+
+[filepaths]
+data = "data/"
+features = "features/"
+labels = "labels/factor_scores.csv"
+checkpoints = "checkpoints"
+logs = "lightning_logs"
+train = "analytic/train.csv"
+val = "analytic/val.csv"
+test = "analytic/test.csv"
+
+[training]
+batch_size = 2048
+max_epochs = 10
+gradient_clip = 1.0
+# swa_lr = 0.001
+
+[optimizer]
+momentum = 0.99
+nesterov = true
+[optimizer.lr]
+low = 1e-4
+high = 1e-2
+log = true
+[optimizer.weight_decay]
+low = 1e-8
+high = 1e-2
+log = true
+
+[model]
+[model.hidden_dim]
+low = 32
+high = 256
+[model.dropout]
+low = 0.0
+high = 0.5
+[model.num_layers]
+low = 1
+high = 3
+
+[logging]
+checkpoint_every_n_steps = 1
+log_every_n_steps = 1
