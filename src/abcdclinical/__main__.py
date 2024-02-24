@@ -1,63 +1,89 @@
+from os import cpu_count
 from tomllib import load
 import pickle
 from sklearn import set_config
-import statsmodels.api as sm
-import polars as pl
+from torch import concat
+
+# import polars as pl
 
 import seaborn as sns
-from abcdclinical.analysis import make_coefficent_table
+from sklearn.metrics import r2_score
 
-from abcdclinical.dataset import drop_demographics, get_data
+from abcdclinical.dataset import get_data
 from abcdclinical.config import Config
-from abcdclinical.plots import (
-    coefficients_plot,
-    elbow_plot,
-    pc_loadings_plot,
-    pc_mean_plot,
-    plot_random_intercept,
-    plot_residuals,
-    predicted_vs_observed,
-)
+from abcdclinical.model import ABCDDataModule, Network, make_trainer
+
+# from abcdclinical.plots import (
+#     coefficients_plot,
+#     elbow_plot,
+#     pc_loadings_plot,
+#     pc_mean_plot,
+#     plot_random_intercept,
+#     plot_residuals,
+#     predicted_vs_observed,
+# )
 from abcdclinical.tune import tune
+from abcdclinical.utils import cleanup_checkpoints, get_best_checkpoint
 
 
 def main():
     set_config(transform_output="pandas")
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
+    train, val, test = get_data(config, regenerate=config.regenerate)
+    input_dim = train.shape[1] - 2  # -2 for src_subject_id and p_score
+    data_module = ABCDDataModule(
+        train=train,
+        val=val,
+        test=test,
+        batch_size=config.training.batch_size,
+        num_workers=0,
+    )
     if config.tune:
-        study = tune(config)
-        with open("data/studies/study.pkl", "wb") as f:
-            pickle.dump(study, f)
+        study = tune(
+            config=config,
+            data_module=data_module,
+            input_dim=input_dim,
+        )
+        best_model_path = get_best_checkpoint(
+            ckpt_folder=config.filepaths.checkpoints, mode="min"
+        )
+        model = Network.load_from_checkpoint(best_model_path)
     else:
         with open("data/studies/study.pkl", "rb") as f:
             study = pickle.load(f)
+        if config.refit:
+            model = Network(
+                input_dim=input_dim,
+                momentum=config.optimizer.momentum,
+                nesterov=config.optimizer.nesterov,
+                batch_size=config.training.batch_size,
+                **study.best_params,
+            )
+            trainer, _ = make_trainer(config)
+            trainer.fit(model, datamodule=data_module)
+            cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
+        else:
+            best_model_path = get_best_checkpoint(
+                ckpt_folder=config.filepaths.checkpoints, mode="min"
+            )
+            model = Network.load_from_checkpoint(best_model_path)
     print(study.best_params)
-    (
-        X_train,
-        y_train,
-        group_train,
-        X_val,
-        y_val,
-        group_val,
-        X_test,
-        y_test,
-        group_test,
-    ) = get_data(
-        config, regenerate=config.refit, n_components=study.best_params["n_components"]
-    )
-    X_train, X_val, X_test = drop_demographics(X_train, X_val, X_test)
-    if config.refit:
-        model = sm.MixedLM(y_train, X_train, groups=group_train).fit(method="lbfgs")
-        with open("data/studies/model.pkl", "wb") as f:
-            pickle.dump(model, f)
-    else:
-        with open("data/studies/model.pkl", "rb") as f:
-            model = pickle.load(f)
-    print(model.summary())
-    y_pred = model.predict(X_test)
 
-    sns.set_theme(font_scale=1.5, style="whitegrid")
+    if config.evaluate:
+        trainer, _ = make_trainer(config)
+        predictions = trainer.predict(
+            model=model, dataloaders=data_module.test_dataloader()
+        )
+        y_pred, y_true = zip(*predictions)
+        y_pred = concat(y_pred)
+        y_true = concat(y_true)
+        mask = ~y_true.isnan()
+        y_pred = y_pred[mask].numpy()
+        y_true = y_true[mask].numpy()
+        print(r2_score(y_true, y_pred))
+
+    # sns.set_theme(font_scale=1.5, style="whitegrid")
 
     # make_tables()
 

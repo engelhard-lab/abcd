@@ -1,12 +1,13 @@
 fast_dev_run = false
-random_seed = 2024
-tune = false
-refit = true
+random_seed = 42
+tune = true
+refit = false
+evaluate = true
+regenerate = false
 verbose = false
 train_size = 0.8
 n_trials = 64
-method = "lm"
-n_components = 20
+method = "rnn"
 
 [filepaths]
 data = "data/"
@@ -19,33 +20,30 @@ val = "analytic/val.csv"
 test = "analytic/test.csv"
 
 [training]
-batch_size = 2048
-max_epochs = 10
+batch_size = 512
+max_epochs = 50
 gradient_clip = 1.0
-# swa_lr = 0.001
 
 [optimizer]
-momentum = 0.99
+momentum = 0.9
 nesterov = true
 [optimizer.lr]
-low = 1e-4
-high = 1e-2
+low = 1e-5
+high = 1e-3
 log = true
 [optimizer.weight_decay]
 low = 1e-8
-high = 1e-2
+high = 1e-1
 log = true
 
 [model]
-[model.hidden_dim]
-low = 32
-high = 256
+hidden_dim = [32, 64, 128, 256]
 [model.dropout]
 low = 0.0
 high = 0.5
 [model.num_layers]
 low = 1
-high = 3
+high = 2
 
 [logging]
 checkpoint_every_n_steps = 1

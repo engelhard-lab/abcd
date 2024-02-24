@@ -1,40 +1,61 @@
-from sklearn.metrics import mean_squared_error
-from abcdclinical.dataset import drop_demographics, get_data
+import pickle
 from optuna import Trial, create_study
 from optuna.samplers import TPESampler
-import statsmodels.api as sm
 
 from abcdclinical.config import Config
+from abcdclinical.model import Network, make_trainer
+from abcdclinical.utils import cleanup_checkpoints
 
 
-def tune(config: Config):
-
+def tune(config: Config, data_module, input_dim):
     def objective(trial: Trial):
-        (
-            X_train,
-            y_train,
-            group_train,
-            X_val,
-            y_val,
-            group_val,
-            X_test,
-            y_test,
-            group_test,
-        ) = get_data(
-            config,
-            regenerate=True,
-            n_components=trial.suggest_int("n_components", low=1, high=122),
+        params = {
+            "hidden_dim": trial.suggest_categorical(
+                name="hidden_dim", choices=config.model.hidden_dim
+            ),
+            "num_layers": trial.suggest_int(
+                name="num_layers",
+                low=config.model.num_layers["low"],
+                high=config.model.num_layers["high"],
+            ),
+            "dropout": trial.suggest_float(
+                name="dropout",
+                low=config.model.dropout["low"],
+                high=config.model.dropout["high"],
+            ),
+            "lr": trial.suggest_float(
+                name="lr",
+                low=config.optimizer.lr["low"],
+                high=config.optimizer.lr["high"],
+            ),
+            "weight_decay": trial.suggest_float(
+                name="weight_decay",
+                low=config.optimizer.weight_decay["low"],
+                high=config.optimizer.weight_decay["high"],
+            ),
+        }
+        model = Network(
+            input_dim=input_dim,
+            momentum=config.optimizer.momentum,
+            nesterov=config.optimizer.nesterov,
+            **params,
+            batch_size=config.training.batch_size,
         )
-        X_train, X_val, X_test = drop_demographics(X_train, X_val, X_test)
-        model = sm.MixedLM(y_train, X_train, groups=group_train).fit(method="lbfgs")
-        y_pred = model.predict(X_val)
-        return float(mean_squared_error(y_val, y_pred))
+        trainer, checkpoint_callback = make_trainer(config)
+        trainer.fit(model, datamodule=data_module)
+        cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
+        return checkpoint_callback.best_model_score.item()  # type: ignore
 
-    sampler = TPESampler(seed=config.random_seed)
+    sampler = TPESampler(
+        seed=config.random_seed, multivariate=True, n_startup_trials=64
+    )
     study = create_study(
         sampler=sampler,
         direction="minimize",
         study_name="ABCD",
     )
     study.optimize(func=objective, n_trials=config.n_trials)
+    with open("data/studies/study.pkl", "wb") as f:
+        pickle.dump(study, f)
+    cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
     return study

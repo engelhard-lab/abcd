@@ -36,14 +36,14 @@ class Logging(BaseModel):
 
 
 class Optimizer(BaseModel):
-    lr: dict[str, float]
-    weight_decay: dict[str, float]
+    lr: dict[str, float | bool]
+    weight_decay: dict[str, float | bool]
     momentum: float
     nesterov: bool
 
 
 class Model(BaseModel):
-    hidden_dim: dict[str, int]
+    hidden_dim: list[int]
     num_layers: dict[str, int]
     dropout: dict[str, float]
 
@@ -53,12 +53,13 @@ class Config(BaseModel):
     random_seed: int
     tune: bool
     refit: bool
+    evaluate: bool
+    regenerate: bool
     n_trials: int
     verbose: bool
     train_size: float
     n_trials: int
     method: str
-    n_components: int
     filepaths: Filepaths
     training: Training
     logging: Logging
