@@ -1,4 +1,4 @@
-from abcdclinical.dataset import EVENT_MAPPING
+from abcdclinical.preprocess import EVENT_MAPPING
 import polars as pl
 
 

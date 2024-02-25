@@ -36,10 +36,11 @@ def tune(config: Config, data_module, input_dim):
         }
         model = Network(
             input_dim=input_dim,
+            output_dim=1,  # FIXME move to config
             momentum=config.optimizer.momentum,
             nesterov=config.optimizer.nesterov,
             **params,
-            batch_size=config.training.batch_size,
+            # batch_size=config.training.batch_size,
         )
         trainer, checkpoint_callback = make_trainer(config)
         trainer.fit(model, datamodule=data_module)
@@ -47,7 +48,9 @@ def tune(config: Config, data_module, input_dim):
         return checkpoint_callback.best_model_score.item()  # type: ignore
 
     sampler = TPESampler(
-        seed=config.random_seed, multivariate=True, n_startup_trials=64
+        seed=config.random_seed,
+        multivariate=True,
+        n_startup_trials=config.n_trials // 2,
     )
     study = create_study(
         sampler=sampler,

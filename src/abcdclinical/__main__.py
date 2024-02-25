@@ -1,17 +1,13 @@
-from os import cpu_count
 from tomllib import load
 import pickle
 from sklearn import set_config
-from torch import concat
 
-# import polars as pl
+from abcdclinical.dataset import ABCDDataModule, RNNDataset
+from abcdclinical.evaluate import evaluate
 
-import seaborn as sns
-from sklearn.metrics import r2_score
-
-from abcdclinical.dataset import get_data
+from abcdclinical.preprocess import get_data
 from abcdclinical.config import Config
-from abcdclinical.model import ABCDDataModule, Network, make_trainer
+from abcdclinical.model import Network, make_trainer
 
 # from abcdclinical.plots import (
 #     coefficients_plot,
@@ -31,14 +27,16 @@ def main():
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
     train, val, test = get_data(config, regenerate=config.regenerate)
-    input_dim = train.shape[1] - 2  # -2 for src_subject_id and p_score
     data_module = ABCDDataModule(
         train=train,
         val=val,
         test=test,
         batch_size=config.training.batch_size,
         num_workers=0,
+        dataset_class=RNNDataset,
+        target="p_score",
     )
+    input_dim = train.shape[1] - 2
     if config.tune:
         study = tune(
             config=config,
@@ -55,9 +53,10 @@ def main():
         if config.refit:
             model = Network(
                 input_dim=input_dim,
+                output_dim=1,  # FIXME move to config
                 momentum=config.optimizer.momentum,
                 nesterov=config.optimizer.nesterov,
-                batch_size=config.training.batch_size,
+                # batch_size=config.training.batch_size,
                 **study.best_params,
             )
             trainer, _ = make_trainer(config)
@@ -71,17 +70,7 @@ def main():
     print(study.best_params)
 
     if config.evaluate:
-        trainer, _ = make_trainer(config)
-        predictions = trainer.predict(
-            model=model, dataloaders=data_module.test_dataloader()
-        )
-        y_pred, y_true = zip(*predictions)
-        y_pred = concat(y_pred)
-        y_true = concat(y_true)
-        mask = ~y_true.isnan()
-        y_pred = y_pred[mask].numpy()
-        y_true = y_true[mask].numpy()
-        print(r2_score(y_true, y_pred))
+        evaluate(config=config, model=model, data_module=data_module)
 
     # sns.set_theme(font_scale=1.5, style="whitegrid")
 
