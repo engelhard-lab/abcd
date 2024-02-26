@@ -51,10 +51,11 @@ class Model(BaseModel):
 class Config(BaseModel):
     fast_dev_run: bool
     random_seed: int
+    regenerate: bool
     tune: bool
     refit: bool
     evaluate: bool
-    regenerate: bool
+    plot: bool
     n_trials: int
     verbose: bool
     train_size: float

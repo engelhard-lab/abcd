@@ -86,9 +86,10 @@ class Network(LightningModule):
         y_masked = y[mask].unsqueeze(1)
         predictions_masked = predictions[mask]
         loss = self.criterion(predictions_masked, y_masked)
-        r2 = metric(predictions_masked, y_masked).nanmean()
         self.log(f"{step_type}_loss", loss, prog_bar=True)
-        self.log(f"{step_type}_metric", r2, prog_bar=True)
+        if step_type == "val":
+            r2 = metric(predictions_masked, y_masked).nanmean()
+            self.log(f"{step_type}_metric", r2, prog_bar=True)
         return loss
 
     def training_step(self, train_batch, batch_idx):

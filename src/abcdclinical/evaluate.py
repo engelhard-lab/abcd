@@ -1,9 +1,14 @@
-from torch import concat
+from shap import GradientExplainer, summary_plot
+from torch import concat, save, load as torch_load
 from sklearn.metrics import r2_score
 import polars as pl
-
+from abcdclinical.dataset import ABCDDataModule, RNNDataset
 from abcdclinical.model import make_trainer
 from abcdclinical.preprocess import EVENT_MAPPING
+
+
+RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
+SEX_MAPPING = {1: "Male", 2: "Female"}
 
 
 def get_predictions(config, model, data_module):
@@ -20,10 +25,6 @@ def get_predictions(config, model, data_module):
     return y_pred.squeeze(1), y_true
 
 
-def apply_r2(args) -> pl.Series:
-    return pl.Series([r2_score(y_true=args[0], y_pred=args[1])], dtype=pl.Float32)
-
-
 def r2_results(y_pred, y_true):
     df = pl.read_csv("data/analytic/test.csv", columns=["src_subject_id"])
     df = df.with_columns(
@@ -32,18 +33,26 @@ def r2_results(y_pred, y_true):
         y_true=y_true,
     )
     demographics = pl.read_csv("data/demographics.csv").with_columns(
-        pl.col("eventname").replace(EVENT_MAPPING)
+        pl.col("eventname").replace(EVENT_MAPPING),
+        pl.col("race_ethnicity").replace(RACE_MAPPING),
+        pl.col("sex").replace(SEX_MAPPING),
     )
     df = df.join(demographics, on=["src_subject_id", "eventname"], how="inner").sort(
         ["src_subject_id", "eventname"]
     )
     df.write_csv("data/results/predicted_vs_observed.csv")
-    df = df.group_by("eventname").agg(
-        pl.apply(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2")
-    )
-    df.write_csv("data/results/r2_by_event.csv")
+
+
+def make_shap_values(model, data_module):
+    test_dataloader = iter(data_module.test_dataloader())
+    X, _ = next(test_dataloader)
+    background, _ = next(test_dataloader)
+    explainer = GradientExplainer(model, background.to("mps:0"))
+    shap_values = explainer.shap_values(X.to("mps:0"))
+    save(shap_values, "data/results/shap_values.pt")
 
 
 def evaluate(config, model, data_module):
+    # make_shap_values(model, data_module)
     y_pred, y_true = get_predictions(config, model, data_module)
     r2_results(y_pred=y_pred, y_true=y_true)

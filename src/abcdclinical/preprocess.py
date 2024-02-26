@@ -2,7 +2,7 @@ from sklearn import set_config
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.impute import KNNImputer
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 import polars as pl
 from polars.type_aliases import JoinStrategy
 import polars.selectors as cs
@@ -22,6 +22,25 @@ EVENT_MAPPING = {
     "2_year_follow_up_y_arm_1": 2,
     "3_year_follow_up_y_arm_1": 3,
     "4_year_follow_up_y_arm_1": 4,
+}
+
+
+DATASET_MAPPING = {
+    "ce_p_fes": "family_environment_parent",
+    "ce_y_fes": "family_environment_youth",
+    "ce_p_nsc": "neighborhood_parent",
+    "ce_y_nsc": "neighborhood_youth",
+    "ce_y_pm": "problem_monitor_youth",
+    "ce_p_psb": "prosocial_parent",
+    "ce_y_psb": "prosocial_youth",
+    "ce_y_srpf": "school_youth",
+    "nt_p_stq": "screentime_parent",
+    "nt_y_st": "screentime_youth",
+    "ph_p_sds": "sleep_disturbance_parent",
+    "su_p_pr": "rules_parent",
+    "dti_fa": "brain_dti_fa",
+    "rsfmri": "brain_rsfmri",
+    "sst": "brain_sst",
 }
 
 
@@ -71,6 +90,8 @@ def get_datasets(filepath: Path):
                     "ss_da",
                     "_total",
                     "_mean",
+                    "sds_",
+                    "srpf_",
                 )
             )
         )
@@ -148,37 +169,6 @@ if __name__ == "__main__":
         config = Config(**load(f))
     set_config(transform_output="pandas")
     train, val, test = get_data(config, regenerate=True)
-
-
-# def make_column_mapping(join_on):
-#     dataset_mapping = {
-#         "ce_p_fes": "family_environment_parent",
-#         "ce_y_fes": "family_environment_youth",
-#         "ce_p_nsc": "neighborhood_parent",
-#         "ce_y_nsc": "neighborhood_youth",
-#         "ce_y_pm": "problem_monitor_youth",
-#         "ce_p_psb": "prosocial_parent",
-#         "ce_y_psb": "prosocial_youth",
-#         "ce_y_srpf": "school_youth",
-#         "nt_p_stq": "screentime_parent",
-#         "nt_y_st": "screentime_youth",
-#         "ph_p_sds": "sleep_disturbance_parent",
-#         "su_p_pr": "rules_parent",
-#         "dti_fa": "brain_dti_fa",
-#         "rsfmri": "brain_rsfmri",
-#         "sst": "brain_sst",
-#     }
-#     columns = {
-#         dataset_mapping[dataset]: pl.read_csv(
-#             "data/features/" + dataset + ".csv",
-#             null_values="",
-#             infer_schema_length=50_000,
-#         )
-#         .drop(join_on)
-#         .columns
-#         for dataset in dataset_mapping
-#     }
-#     return {value: key for key, values in columns.items() for value in values}
 
 
 # def get_components(pipeline, feature_names, join_on):

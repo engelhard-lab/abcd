@@ -55,6 +55,8 @@ class ABCDDataModule(LightningDataModule):
             drop_last=True,
             pin_memory=True,
             collate_fn=self.collate_fn,
+            persistent_workers=True,
+            multiprocessing_context="fork",
         )
 
     def val_dataloader(self):
@@ -64,7 +66,9 @@ class ABCDDataModule(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            persistent_workers=True,
             collate_fn=self.collate_fn,
+            multiprocessing_context="fork",
         )
 
     def test_dataloader(self):
@@ -74,5 +78,7 @@ class ABCDDataModule(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
+            persistent_workers=True,
             collate_fn=self.collate_fn,
+            multiprocessing_context="fork",
         )

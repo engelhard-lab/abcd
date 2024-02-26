@@ -1,9 +1,10 @@
 fast_dev_run = false
 random_seed = 42
-tune = false
-refit = false
-evaluate = true
 regenerate = false
+tune = true
+refit = false
+evaluate = false
+plot = false
 verbose = false
 train_size = 0.8
 n_trials = 128
@@ -13,14 +14,14 @@ method = "rnn"
 data = "data/"
 features = "features/"
 labels = "labels/factor_scores.csv"
-checkpoints = "checkpoints"
+checkpoints = "checkpoints_inter"
 logs = "lightning_logs"
 train = "analytic/train.csv"
 val = "analytic/val.csv"
 test = "analytic/test.csv"
 
 [training]
-batch_size = 2048
+batch_size = 1024
 max_epochs = 100
 gradient_clip = 1.0
 
