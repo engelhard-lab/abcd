@@ -4,14 +4,14 @@ import pickle
 from lightning import seed_everything
 from sklearn import set_config
 
-from abcdclinical.dataset import ABCDDataModule, RNNDataset
-from abcdclinical.evaluate import evaluate
-from abcdclinical.preprocess import get_data
-from abcdclinical.config import Config
-from abcdclinical.model import Network, make_trainer
-from abcdclinical.plots import plot
-from abcdclinical.tune import tune
-from abcdclinical.utils import cleanup_checkpoints, get_best_checkpoint
+from abcd.dataset import ABCDDataModule, RNNDataset
+from abcd.evaluate import evaluate
+from abcd.preprocess import get_data
+from abcd.config import Config
+from abcd.model import Network, make_trainer
+from abcd.plots import plot
+from abcd.tune import tune
+from abcd.utils import cleanup_checkpoints, get_best_checkpoint
 
 
 def main():

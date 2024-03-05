@@ -14,7 +14,7 @@ from tomllib import load
 from pathlib import Path
 from functools import reduce
 
-from abcdclinical.config import Config
+from abcd.config import Config
 
 EVENT_MAPPING = {
     "baseline_year_1_arm_1": 0,

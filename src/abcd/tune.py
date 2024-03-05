@@ -2,9 +2,9 @@ import pickle
 from optuna import Trial, create_study
 from optuna.samplers import TPESampler
 
-from abcdclinical.config import Config
-from abcdclinical.model import Network, make_trainer
-from abcdclinical.utils import cleanup_checkpoints
+from abcd.config import Config
+from abcd.model import Network, make_trainer
+from abcd.utils import cleanup_checkpoints
 
 
 def tune(config: Config, data_module, input_dim):

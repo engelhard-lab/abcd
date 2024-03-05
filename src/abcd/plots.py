@@ -13,9 +13,9 @@ from torch.utils.data import DataLoader
 from shap import summary_plot
 from matplotlib.patches import Patch
 
-from abcdclinical.dataset import RNNDataset, collate
-from abcdclinical.evaluate import RACE_MAPPING, SEX_MAPPING
-from abcdclinical.preprocess import DATASET_MAPPING
+from abcd.dataset import RNNDataset, collate
+from abcd.evaluate import RACE_MAPPING, SEX_MAPPING
+from abcd.preprocess import DATASET_MAPPING
 
 
 FORMAT = "png"

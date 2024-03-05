@@ -1,6 +1,6 @@
 from sklearn.metrics import r2_score
-from abcdclinical.evaluate import RACE_MAPPING, SEX_MAPPING
-from abcdclinical.preprocess import EVENT_MAPPING
+from abcd.evaluate import RACE_MAPPING, SEX_MAPPING
+from abcd.preprocess import EVENT_MAPPING
 import polars as pl
 
 

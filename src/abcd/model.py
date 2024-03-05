@@ -10,7 +10,7 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import Trainer
 from torchmetrics import R2Score
-from abcdclinical.config import Config
+from abcd.config import Config
 
 
 class RNN(nn.Module):
