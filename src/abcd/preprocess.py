@@ -2,7 +2,7 @@ from sklearn import set_config
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.impute import KNNImputer
-from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.preprocessing import StandardScaler
 import polars as pl
 from polars.type_aliases import JoinStrategy
 import polars.selectors as cs

@@ -3,13 +3,9 @@ import numpy as np
 import polars as pl
 import pandas as pd
 import seaborn as sns
-from sklearn.decomposition import PCA
-from sklearn.discriminant_analysis import StandardScaler
-from sklearn.impute import SimpleImputer
 from sklearn.metrics import r2_score
-from sklearn.pipeline import Pipeline
-from torch import load as torch_load
 from torch.utils.data import DataLoader
+from torch import load as torch_load
 from shap import summary_plot
 from matplotlib.patches import Patch
 
@@ -33,83 +29,12 @@ DATASET_NAMES = [
     "brain_rsfmri",
     "brain_sst",
 ]
-COLOR_MAPPING = dict(zip(DATASET_NAMES, sns.color_palette("tab20")))
+COLOR_MAPPING = dict(
+    zip(DATASET_NAMES, sns.color_palette("tab20"))
+)  # FIXME get better colors
 
 
-def elbow_plot():
-    plt.figure()
-    X = pd.read_csv("data/analytic/raw_train_features.csv")
-    pipeline_steps = [
-        ("scaler", StandardScaler()),
-        ("imputer", SimpleImputer(strategy="median")),
-        ("pca", PCA()),
-    ]
-    pipeline = Pipeline(steps=pipeline_steps)
-    X = pipeline.fit_transform(X)
-    component_names = range(1, X.shape[1] + 1)
-    data = pd.DataFrame(
-        {
-            "component": component_names,
-            "explained_variance_ratio": pipeline.named_steps[
-                "pca"
-            ].explained_variance_ratio_,
-        }
-    )
-    g = sns.lineplot(data=data, x="component", y="explained_variance_ratio", alpha=0.5)
-    g.set(ylabel="Explained variance ratio", xlabel="Principal component")
-    plt.tight_layout()
-    plt.savefig("data/plots/elbow.png", format=FORMAT)
-
-
-def pc_mean_plot(components):
-    plt.figure()
-    data = (
-        pl.DataFrame(components)
-        .melt(id_vars=["name", "dataset"])
-        .with_columns(
-            pl.col("dataset").str.replace("_youth", "").str.replace("_parent", "")
-        )
-        .with_columns(pl.col("value").abs())
-        .drop_nulls()
-        # .with_columns(pl.col("variable").cast(pl.Int32))
-        .rename({"variable": "PC"})
-    )
-    g = sns.catplot(
-        data=data,
-        x="value",
-        y="dataset",
-        col="PC",
-        col_wrap=4,
-        kind="bar",
-        sharex=False,
-    )
-    g.set_axis_labels("Mean component loading", "Dataset")
-    plt.savefig("data/plots/pc_loading_mean.png", format=FORMAT)
-
-
-def pc_loadings_plot(components):
-    plt.figure()
-    components = pl.DataFrame(components)
-    data = (
-        components.melt(id_vars=["name", "dataset"])
-        .group_by("variable", maintain_order=True)
-        .map_groups(lambda x: x.sort(pl.col("value").abs(), descending=True).head(10))
-    )
-    sns.catplot(
-        x="value",
-        y="name",
-        hue="dataset",
-        col="variable",
-        col_wrap=4,
-        kind="bar",
-        data=data,
-        sharey=False,
-        sharex=False,
-    )
-    plt.savefig("data/plots/pc_loading.png", format=FORMAT)
-
-
-def predicted_vs_observed(hue):
+def predicted_vs_observed():
     plt.figure()
     sns.set_palette(palette=sns.color_palette("tab20"))
     df = (
@@ -152,9 +77,6 @@ def predicted_vs_observed(hue):
     for ax in g.axes.flat:
         ax.plot([min_val, max_val], [min_val, max_val], color="black", linestyle="--")
         handles, labels = ax.get_legend_handles_labels()
-        # handles = [
-        #     Patch(facecolor=color) for color in sns.color_palette("deep")[: len(labels)]
-        # ]
         ax.legend(
             handles=handles,
             labels=labels,
@@ -162,55 +84,8 @@ def predicted_vs_observed(hue):
             loc="upper left",
         )
         ax.set_title("")
-        # r_squared = r2_score(group["y_true"], group["y_pred"])
-    # sns.move_legend(g, title=hue.replace("_", "/").capitalize(), loc="center right")
-    # plt.text(
-    #     x=min_val,
-    #     y=max_val,
-    #     s=f"Mean R$^2$ = {r_squared:.2f}",
-    #     fontsize=12,
-    #     verticalalignment="top",
-    # )
-    # plt.axis("equal")
     plt.show()
-    # plt.tight_layout()
-    # plt.savefig(f"data/plots/predicted_vs_observed_{hue}.png", format=FORMAT)
-
-
-def plot_residuals(y_test, y_pred):
-    plt.figure()
-    g = sns.histplot(x=np.abs(y_test - y_pred), color="#4C72B0")
-    g.set(xlabel="Residuals", ylabel="Frequency")
-    plt.savefig("data/plots/residuals.png", format=FORMAT)
-
-
-def coefficients_plot():
-    plt.figure(figsize=(8, 10), dpi=300)
-    df = pd.read_csv("data/results/coefficients.csv").head(20)
-    g = sns.scatterplot(x="Coef.", y="Predictor", data=df, color="black", zorder=2)
-    g.set(
-        title="PCA Regression Coefficients",
-        xlabel="Coefficient value",
-        ylabel="Principal components",
-    )
-    for i in range(df.shape[0]):
-        plt.plot(
-            [df["[0.025"][i], df["0.975]"][i]],
-            [df["Predictor"][i], df["Predictor"][i]],
-            color="grey",
-            zorder=1,
-        )
-    plt.axvline(x=0.0, color="black", linestyle="--")
-    plt.tight_layout()
-    plt.savefig("data/plots/coefficients.png", format=FORMAT)
-
-
-def plot_random_intercept(model):
-    plt.figure()
-    df = pl.DataFrame(model.random_effects).melt().to_pandas()
-    g = sns.histplot(x=df["value"], color="#4C72B0")
-    g.set(xlabel="Random intercept")
-    plt.savefig("data/plots/random_intercept.png", format=FORMAT)
+    plt.savefig(f"data/plots/predicted_vs_observed.{FORMAT}", format=FORMAT)
 
 
 def shap_plot(shap_values, X, feature_names):
@@ -300,53 +175,38 @@ def shap_clustermap(shap_values, feature_names, column_mapping):
 
 def plot(dataloader):
     sns.set_theme(font_scale=1.5, style="whitegrid", palette="deep")
-    # feature_names = (
-    #     pl.read_csv("data/analytic/test.csv")
-    #     .drop(["src_subject_id", "p_score"])
-    #     .columns
-    # )
-    # test_dataloader = iter(dataloader)
-    # X, _ = next(test_dataloader)
-    # X = X.view(-1, X.shape[2])
-    # shap_values_list = torch_load("data/results/shap_values.pt")
-    # shap_values = np.mean(shap_values_list, axis=0)
-    # shap_values = shap_values.reshape(-1, shap_values.shape[2])
-    # assert X.shape[1] == len(feature_names)
-    # summary_plot(
-    #     shap_values,
-    #     features=X,
-    #     show=True,
-    # )
-    # shap_by_year_plot(
-    #     shap_values_list=shap_values_list, X=X, feature_names=feature_names
-    # )
-    # column_mapping = make_column_mapping(join_on=["src_subject_id", "eventname"])
-    # grouped_shap_plot(
-    #     shap_values=shap_values,
-    #     feature_names=feature_names,
-    #     column_mapping=column_mapping,
-    # )
-    # shap_clustermap(
-    #     shap_values=shap_values,
-    #     feature_names=feature_names,
-    #     column_mapping=column_mapping,
-    # )
-
-    # make_coefficent_table(model)
-    # coefficients = pl.read_csv("data/results/coefficients.csv")
-    predicted_vs_observed(hue="race_ethnicity")
-    # predicted_vs_observed(hue="sex")
-    # predicted_vs_observed(hue="eventname")
-    # plot_residuals(y_test, y_pred)
-    # coefficients_plot()
-    # plot_random_intercept(model)
-
-    # indices = coefficients["index"].drop_nulls().drop_nans()[:20].cast(pl.Utf8)
-    # components = pl.read_csv("data/results/principal_components.csv")
-    # largest_components = components.select("name", "dataset", pl.col(indices))
-    # pc_mean_plot(largest_components)
-    # pc_loadings_plot(largest_components)
-    # elbow_plot()
+    feature_names = (
+        pl.read_csv("data/analytic/test.csv")
+        .drop(["src_subject_id", "p_score"])
+        .columns
+    )
+    test_dataloader = iter(dataloader)
+    X, _ = next(test_dataloader)
+    X = X.view(-1, X.shape[2])
+    shap_values_list = torch_load("data/results/shap_values.pt")
+    shap_values = np.mean(shap_values_list, axis=0)
+    shap_values = shap_values.reshape(-1, shap_values.shape[2])
+    assert X.shape[1] == len(feature_names)
+    summary_plot(
+        shap_values,
+        features=X,
+        show=True,
+    )
+    shap_by_year_plot(
+        shap_values_list=shap_values_list, X=X, feature_names=feature_names
+    )
+    column_mapping = make_column_mapping(join_on=["src_subject_id", "eventname"])
+    grouped_shap_plot(
+        shap_values=shap_values,
+        feature_names=feature_names,
+        column_mapping=column_mapping,
+    )
+    shap_clustermap(
+        shap_values=shap_values,
+        feature_names=feature_names,
+        column_mapping=column_mapping,
+    )
+    predicted_vs_observed()
 
 
 if __name__ == "__main__":
