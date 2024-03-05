@@ -3,7 +3,6 @@ import numpy as np
 import polars as pl
 import pandas as pd
 import seaborn as sns
-from sklearn.metrics import r2_score
 from torch.utils.data import DataLoader
 from torch import load as torch_load
 from shap import summary_plot
