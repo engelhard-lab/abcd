@@ -1,20 +1,22 @@
 fast_dev_run = false
 random_seed = 42
 regenerate = false
-tune = true
+tune = false
 refit = false
 evaluate = false
-plot = false
+plot = true
+tables = false
 verbose = false
 train_size = 0.8
-n_trials = 128
+n_trials = 64
 method = "rnn"
+join_on = ["src_subject_id", "eventname"]
 
 [filepaths]
 data = "data/"
 features = "features/"
 labels = "labels/factor_scores.csv"
-checkpoints = "checkpoints_inter"
+checkpoints = "checkpoints"
 logs = "lightning_logs"
 train = "analytic/train.csv"
 val = "analytic/val.csv"
@@ -34,14 +36,14 @@ high = 1e-2
 log = true
 [optimizer.weight_decay]
 low = 1e-8
-high = 1e-1
+high = 1e-2
 log = true
 
 [model]
 hidden_dim = [16, 32, 64, 128]
 [model.dropout]
 low = 0.0
-high = 0.8
+high = 0.5
 [model.num_layers]
 low = 1
 high = 5
@@ -49,3 +51,127 @@ high = 5
 [logging]
 checkpoint_every_n_steps = 1
 log_every_n_steps = 1
+
+[features]
+[features.abcd_p_demo]
+name = "Demographics"
+respondent = "Parent"
+columns = [
+    "demo_sex_v2",
+    "demo_comb_income_v2",
+    "demo_prnt_ed_v2",
+    "demo_prtnr_ed_v2",
+]
+[features.led_l_adi]
+name = "Demographics"
+respondent = "Parent"
+columns = [
+    "reshist_addr1_adi_perc",
+    "reshist_addr2_adi_perc",
+    "reshist_addr3_adi_perc",
+]
+[features.abcd_y_lt]
+name = "Demographics"
+respondent = "Parent"
+columns = ["interview_age", "site_id_l"]
+[features.abcd_aces]
+name = "Adverse childhood experiences"
+respondent = "Parent"                  # TODO check if this is from parent, youth, or both
+columns = ["total_core"]
+[features.ce_p_fes]
+name = "Family environment"
+respondent = "Parent"
+columns = []
+[features.ce_y_fes]
+name = "Family environment"
+respondent = "Youth"
+columns = []
+[features.ce_p_nsc]
+name = "Neighborhood"
+respondent = "Parent"
+columns = []
+[features.ce_y_nsc]
+name = "Neighborhood"
+respondent = "Youth"
+columns = []
+[features.ce_y_pm]
+name = "Problem Monitor"
+respondent = "Youth"
+columns = []
+[features.ce_p_psb]
+name = "Prosocial"
+respondent = "Parent"
+columns = []
+[features.ce_y_psb]
+name = "Prosocial"
+respondent = "Youth"
+columns = []
+[features.ce_y_srpf]
+name = "School"
+respondent = "Youth"
+columns = []
+[features.nt_p_stq]
+name = "Screentime"
+respondent = "Parent"
+columns = []
+[features.nt_y_st]
+name = "Screentime"
+respondent = "Youth"
+columns = []
+[features.ph_p_sds]
+name = "Sleep Disturbance"
+respondent = "Parent"
+columns = []
+[features.su_p_pr]
+name = "Parental rules"
+respondent = "Parent"
+columns = []
+[features.mri_y_dti_fa_fs_at]
+name = "DTIFA"
+respondent = "Youth"
+columns = [
+    "dmdtifp1_10",
+    "dmdtifp1_9",
+    "dmdtifp1_19",
+    "dmdtifp1_4",
+    "dmdtifp1_3",
+    "dmdtifp1_6",
+    "dmdtifp1_5",
+    "dmdtifp1_8",
+    "dmdtifp1_7",
+    "dmdtifp1_17",
+    "dmdtifp1_18",
+    "dmdtifp1_1",
+    "dmdtifp1_14",
+    "dmdtifp1_13",
+    "dmdtifp1_27",
+    "dmdtifp1_26",
+    "dmdtifp1_12",
+    "dmdtifp1_11",
+    "dmdtifp1_2",
+    "dmdtifp1_21",
+    "dmdtifp1_20",
+]
+[features.mri_y_rsfmr_cor_gp_gp]
+name = "RSFMRI"
+respondent = "Youth"
+columns = [
+    "rsfmri_c_ngd_cgc_ngd_dt",
+    "rsfmri_c_ngd_dt_ngd_fo",
+    "rsfmri_c_ngd_dt_ngd_dt",
+    "rsfmri_c_ngd_fo_ngd_cgc",
+    "rsfmri_c_ngd_fo_ngd_fo",
+    "rsfmri_c_ngd_cgc_ngd_cgc",
+]
+[features.mri_y_tfmr_sst_csvcg_dsk]
+name = "SST"
+respondent = "Youth"
+columns = ["tfmri_sacsvcg_bcdk_bktslh", "tfmri_sacsvcg_bcdk_bktsrh"]
+[features.mri_y_tfmr_mid_alrvn_dsk]
+name = "SST"
+respondent = "Youth"
+columns = ["tfmri_ma_alrvn_b_cds_bkslh", "tfmri_ma_alrvn_b_cds_bksrh"]
+[features.mri_y_tfmr_nback_2b_dsk]
+name = "SST"
+respondent = "Youth"
+columns = ["tfmri_nback_all_339", "tfmri_nback_all_373"]

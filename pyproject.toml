@@ -3,14 +3,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "abcdclinical"
+name = "abcd"
 version = "0.0.1"
 authors = [{ name = "Elliot Hill", email = "elliot.d.hill@duke.edu" }]
-description = "Longitudinal prediction of neurodevelopmental in children"
+description = "Longitudinal prediction of mental health in children"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Elliot-D-Hill/abcd"
+Issues = "https://github.com/Elliot-D-Hill/abcd/issues"

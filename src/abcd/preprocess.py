@@ -1,4 +1,5 @@
-from sklearn import set_config
+from collections import defaultdict
+from typing import Callable
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.impute import KNNImputer
@@ -8,13 +9,10 @@ from polars.type_aliases import JoinStrategy
 import polars.selectors as cs
 import pandas as pd
 
-# import numpy as np
-
-from tomllib import load
 from pathlib import Path
 from functools import reduce
 
-from abcd.config import Config
+from abcd.config import Config, Features
 
 EVENT_MAPPING = {
     "baseline_year_1_arm_1": 0,
@@ -22,25 +20,6 @@ EVENT_MAPPING = {
     "2_year_follow_up_y_arm_1": 2,
     "3_year_follow_up_y_arm_1": 3,
     "4_year_follow_up_y_arm_1": 4,
-}
-
-
-DATASET_MAPPING = {
-    "ce_p_fes": "family_environment_parent",
-    "ce_y_fes": "family_environment_youth",
-    "ce_p_nsc": "neighborhood_parent",
-    "ce_y_nsc": "neighborhood_youth",
-    "ce_y_pm": "problem_monitor_youth",
-    "ce_p_psb": "prosocial_parent",
-    "ce_y_psb": "prosocial_youth",
-    "ce_y_srpf": "school_youth",
-    "nt_p_stq": "screentime_parent",
-    "nt_y_st": "screentime_youth",
-    "ph_p_sds": "sleep_disturbance_parent",
-    "su_p_pr": "rules_parent",
-    "dti_fa": "brain_dti_fa",
-    "rsfmri": "brain_rsfmri",
-    "sst": "brain_sst",
 }
 
 
@@ -73,40 +52,137 @@ def join_dataframes(
     )
 
 
-def get_datasets(filepath: Path):
-    return [
+def make_demographics(df: pl.DataFrame):
+    education = ["demo_prnt_ed_v2", "demo_prtnr_ed_v2"]
+    df = (
+        df.with_columns(
+            pl.all().forward_fill().over("src_subject_id"),
+            pl.max_horizontal(education).alias("parent_highest_education"),
+        )
+        .drop(education)
+        .to_dummies("demo_sex_v2", drop_first=True)
+    )
+    return df
+
+
+def make_sites(df: pl.DataFrame):
+    return df.to_dummies("site_id_l", drop_first=True)
+
+
+def make_adi(df: pl.DataFrame):
+    return df.with_columns(
+        pl.mean_horizontal(
+            "reshist_addr1_adi_perc",
+            "reshist_addr2_adi_perc",
+            "reshist_addr3_adi_perc",
+        ).alias("adi_percentile")
+    )
+
+
+def get_datasets(config: Config) -> list[pl.DataFrame]:
+    columns_to_drop = (
+        "_nm",
+        "_nt",
+        "_na",
+        "_language",
+        "_answered",
+        "ss_sbd",
+        "ss_da",
+        "_total",
+        "_mean",
+        "sds_",
+        "srpf_",
+        "_fc",
+    )
+    transforms: defaultdict[str, Callable] = defaultdict(lambda: lambda df: df)
+    transforms.update(
+        {
+            "abcd_p_demo": make_demographics,
+            "abcd_y_lt": make_sites,
+            "led_l_adi": make_adi,
+        }
+    )
+    dfs = []
+    for filename, metadata in config.features.model_dump().items():
+        df = pl.read_csv(
+            source=config.filepaths.features / f"{filename}.csv",
+            null_values=["", "null"],
+            infer_schema_length=50_000,
+        )
+        if len(metadata["columns"]) > 0:
+            columns = pl.col(config.join_on + metadata["columns"])
+        else:
+            columns = df.columns
+        transform = transforms[filename]
+        df = (
+            df.select(columns)
+            .select(~cs.contains(columns_to_drop))
+            .with_columns(pl.all().replace({777: None, 999: None}))
+            .pipe(transform)
+            .pipe(drop_null_columns)
+        )
+        dfs.append(df)
+    return dfs
+
+
+def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
+    metadata_dfs: list[pl.DataFrame] = []
+    for df, (filename, metadata) in zip(dfs, features.model_dump().items()):
+        table_metadata = {"table": [], "dataset": [], "respondent": [], "column": []}
+        for column in df.columns:
+            table_metadata["table"].append(filename)
+            table_metadata["dataset"].append(metadata["name"])
+            table_metadata["respondent"].append(metadata["respondent"])
+            table_metadata["column"].append(column)
+            metadata_df = pl.DataFrame(table_metadata)
+        metadata_dfs.append(metadata_df)
+    variables = pl.concat(metadata_dfs)
+    questions = (
         pl.read_csv(
-            source=filepath, null_values=["", "null"], infer_schema_length=50_000
+            "data/abcd_data_dictionary.csv",
+            columns=["table_name", "var_name", "var_label", "notes"],
         )
-        .select(
-            ~cs.contains(
-                (
-                    "_nm",
-                    "_nt",
-                    "_na",
-                    "_language",
-                    "_answered",
-                    "ss_sbd",
-                    "ss_da",
-                    "_total",
-                    "_mean",
-                    "sds_",
-                    "srpf_",
-                )
-            )
+        .rename(
+            {
+                "table_name": "table",
+                "var_name": "column",
+                "var_label": "question",
+                "notes": "response",
+            }
         )
-        .pipe(drop_null_columns)
-        for filepath in filepath.glob("*")
-    ]
+        .drop("table_name")
+    )
+    df = (
+        variables.join(questions, on=["table", "column"], how="inner")
+        .with_columns(
+            pl.col("dataset").str.replace_all("_", " "),
+            pl.col("question")
+            .str.replace("\\..*|/.*|\\?.*", "")
+            .str.to_lowercase()
+            .str.slice(0),
+            pl.col("response").str.replace_all("\\s*/\\s*[^;]+", ""),  # |/\s+\w+ #
+        )
+        .with_columns(
+            pl.col("dataset").str.slice(0, 1).str.to_uppercase()
+            + pl.col("dataset").str.slice(1),
+            pl.col("question").str.slice(0, 1).str.to_uppercase()
+            + pl.col("question").str.slice(1),
+        )
+    )
+    df.write_csv("data/variables.csv")
 
 
-def make_dataset(dfs: list[pl.DataFrame], labels_path: Path, join_on: list[str]):
-    labels = make_labels(filepath=labels_path)
-    features = join_dataframes(dfs=dfs, join_on=join_on, how="outer_coalesce")
+def make_dataset(dfs: list[pl.DataFrame], config: Config):
+    labels = make_labels(filepath=config.filepaths.labels)
+    features = join_dataframes(dfs=dfs, join_on=config.join_on, how="outer_coalesce")
     features.write_csv("data/analytic/features.csv")
-    df = labels.join(other=features, on=join_on, how="inner")
-    df = df.with_columns(pl.col("eventname").replace(EVENT_MAPPING))
-    df = df.drop("race_ethnicity")
+    df = (
+        labels.join(other=features, on=config.join_on, how="inner")
+        .with_columns(pl.col("eventname").replace(EVENT_MAPPING))
+        .sort(config.join_on)
+    )
+    print(df)
+    # df = df.drop("race_ethnicity")  # TODO Keep for analysis but drop for fitting
     df.write_csv("data/analytic/dataset.csv")
     return df.partition_by("src_subject_id", include_key=True)
 
@@ -121,6 +197,8 @@ def process_dataset(df, random_seed: int):
     X_train = pl.concat(X_train).to_pandas()
     X_val = pl.concat(X_val).to_pandas()
     X_test = pl.concat(X_test).to_pandas()
+    print(X_test)
+    X_test.to_csv("data/test_untransformed.csv", index=False)
     y_train = X_train.pop("p_score")
     y_val = X_val.pop("p_score")
     y_test = X_test.pop("p_score")
@@ -141,10 +219,10 @@ def process_dataset(df, random_seed: int):
     return train, val, test
 
 
-def generate_data(config):
-    dfs = get_datasets(config.filepaths.features)
-    join_on = ["src_subject_id", "eventname"]
-    df = make_dataset(dfs, labels_path=config.filepaths.labels, join_on=join_on)
+def generate_data(config: Config):
+    dfs = get_datasets(config=config)
+    make_variable_metadata(dfs=dfs, features=config.features)
+    df = make_dataset(dfs, config=config)
     train, val, test = process_dataset(df, random_seed=config.random_seed)
     train.to_csv("data/analytic/train.csv", index=False)
     val.to_csv("data/analytic/val.csv", index=False)
@@ -162,28 +240,3 @@ def get_data(config: Config, regenerate: bool):
         val = pd.read_csv(config.filepaths.val)
         test = pd.read_csv(config.filepaths.test)
         return train, val, test
-
-
-if __name__ == "__main__":
-    with open("config.toml", "rb") as f:
-        config = Config(**load(f))
-    set_config(transform_output="pandas")
-    train, val, test = get_data(config, regenerate=True)
-
-
-# def get_components(pipeline, feature_names, join_on):
-#     components = pipeline.named_steps["pca"].components_.T
-#     component_names = range(1, components.shape[1] + 1)
-#     explained_variance = pd.DataFrame(
-#         {
-#             "component": component_names,
-#             "explained_variance_ratio": pipeline.named_steps[
-#                 "pca"
-#             ].explained_variance_ratio_,
-#         }
-#     )
-#     components = pd.DataFrame(components, columns=component_names)
-#     components["name"] = feature_names
-#     column_mapping = make_column_mapping(join_on)
-#     components["dataset"] = components["name"].map(column_mapping)
-#     return components, explained_variance

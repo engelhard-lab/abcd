@@ -1,7 +1,13 @@
 polars
 scikit-learn
+lightning
 optuna
+pydantic
 numpy
 pandas
 matplotlib
 seaborn
+shap
+tensorboard
+rich
+pyarrow

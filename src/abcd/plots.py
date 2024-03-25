@@ -1,56 +1,30 @@
+from matplotlib import legend
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import pandas as pd
 import seaborn as sns
-from torch.utils.data import DataLoader
 from torch import load as torch_load
-from shap import summary_plot
-from matplotlib.patches import Patch
 
-from abcd.dataset import RNNDataset, collate
-from abcd.evaluate import RACE_MAPPING, SEX_MAPPING
-from abcd.preprocess import DATASET_MAPPING
+# from shap import summary_plot
+from matplotlib.patches import Patch
+import textwrap
+
+from abcd.config import Config
 
 
 FORMAT = "png"
 
-DATASET_NAMES = [
-    "family_environment",
-    "neighborhood",
-    "problem_monitor",
-    "prosocial",
-    "school",
-    "screentime",
-    "sleep_disturbance",
-    "rules",
-    "brain_dti_fa",
-    "brain_rsfmri",
-    "brain_sst",
-]
-COLOR_MAPPING = dict(
-    zip(DATASET_NAMES, sns.color_palette("tab20"))
-)  # FIXME get better colors
 
-
-def predicted_vs_observed():
-    plt.figure()
-    sns.set_palette(palette=sns.color_palette("tab20"))
-    df = (
-        pl.read_csv("data/results/predicted_vs_observed.csv")
-        .with_columns(
-            (pl.col("age") / 12).round(0).cast(pl.Int32),
-            pl.col("race_ethnicity").replace(RACE_MAPPING),
-            pl.col("sex").replace(SEX_MAPPING),
-        )
-        .rename(
-            {
-                "eventname": "Year",
-                "race_ethnicity": "Race/Ethnicity",
-                "sex": "Sex",
-                "age": "Age",
-            }
-        )
+def predicted_vs_observed_plot():
+    df = pl.read_csv("data/results/predicted_vs_observed.csv")
+    df = df.rename(
+        {
+            "eventname": "Year",
+            "race_ethnicity": "Race/Ethnicity",
+            "demo_sex_v2_1": "Sex",
+            "interview_age": "Age",
+        }
     )
     df = (
         df.melt(
@@ -58,95 +32,152 @@ def predicted_vs_observed():
             value_vars=["Year", "Race/Ethnicity", "Sex", "Age"],
         )
         .rename({"value": "Group", "variable": "Variable"})
+        .with_columns(pl.col("Group").replace("9", " 9"))
         .sort("Group")
+        .drop_nulls()
     )
     min_val = df.select(pl.min_horizontal(["y_true", "y_pred"]).min()).item()
     max_val = df.select(pl.max_horizontal(["y_true", "y_pred"]).max()).item()
     df = df.to_pandas()
-    g = sns.lmplot(
-        data=df,
-        x="y_true",
-        y="y_pred",
-        hue="Group",
-        col="Variable",
-        col_wrap=2,
-        facet_kws={"legend_out": False},
-    )
-    g.set(xlabel="Observed", ylabel="Predicted")
-    for ax in g.axes.flat:
-        ax.plot([min_val, max_val], [min_val, max_val], color="black", linestyle="--")
-        handles, labels = ax.get_legend_handles_labels()
+    fig, axes = plt.subplots(2, 2, figsize=(10, 10), sharex=True, sharey=True)
+    groups = df.groupby("Variable")
+    palette = sns.color_palette("deep")
+    for j, (ax, (name, group)) in enumerate(zip(axes.flat, groups)):
+        labels = group["Group"].unique().tolist()
+        for i, hue_category in enumerate(labels):
+            hue_subset = group[group["Group"] == hue_category]
+            sns.regplot(
+                x="y_true", y="y_pred", data=hue_subset, color=palette[i], ax=ax
+            )
+        handles = [Patch(facecolor=palette[i]) for i in range(len(labels))]
         ax.legend(
             handles=handles,
             labels=labels,
-            title=ax.get_title().replace("Variable = ", ""),
+            title=name,
             loc="upper left",
         )
-        ax.set_title("")
-    plt.show()
+        if j in (0, 2):
+            ax.set_ylabel("Predicted")
+        if j in (2, 3):
+            ax.set_xlabel("Observed")
+        if j in (1, 3):
+            ax.set_ylabel("")
+        if j in (0, 1):
+            ax.set_xlabel("")
+        ax.plot([min_val, max_val], [min_val, max_val], color="black", linestyle="--")
+    plt.tight_layout()
     plt.savefig(f"data/plots/predicted_vs_observed.{FORMAT}", format=FORMAT)
 
 
-def shap_plot(shap_values, X, feature_names):
-    pass
-
-
-def shap_by_year_plot(shap_values_list, X, feature_names):
-    _, axes = plt.subplots(nrows=2, ncols=2, figsize=(12, 10))
-    for i, (shap_values, ax) in enumerate(zip(shap_values_list, axes.flatten())):
-        shap_values = shap_values.reshape(-1, shap_values.shape[2])
-        plt.sca(ax)
-        ax.set_title(f"Year {i + 1}")
-        summary_plot(
-            shap_values,
-            features=X,
-            feature_names=feature_names,
-            show=False,
-            plot_size=None,
-        )
-    plt.tight_layout()
-    plt.show()
-
-
-def make_column_mapping(join_on):
-    columns = {
-        DATASET_MAPPING[dataset]: pl.read_csv(
-            "data/features/" + dataset + ".csv",
-            null_values="",
-            infer_schema_length=50_000,
-        )
-        .drop(join_on)
-        .columns
-        for dataset in DATASET_MAPPING
-    }
-    return {
-        value: key.replace("_youth", "").replace("_parent", "")
-        for key, values in columns.items()
-        for value in values
-    }
-
-
-def grouped_shap_plot(shap_values, feature_names, column_mapping):
-    df = pl.DataFrame(shap_values, schema=feature_names).transpose(
-        include_header=True, header_name="variable"
+def shap_plot(metadata):
+    plt.figure(figsize=(16, 10))
+    metadata = metadata.rename(
+        {"column": "variable", "dataset": "Dataset"}
+    ).with_columns((pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset"))
+    df = pl.read_csv("data/results/shap_coefs.csv")
+    print(df.filter(pl.col("variable").eq("total_core")))
+    print(metadata.filter(pl.col("variable").eq("total_core")))
+    df = df.join(other=metadata, on="variable", how="inner")
+    top_questions = (
+        df.group_by("question")
+        .agg(pl.col("value").abs().mean())
+        .sort(by="value")
+        .tail(20)["question"]
+        .reverse()
+        .to_list()
     )
     df = (
-        df.filter(pl.col("variable") != "eventname")
-        .with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
+        df.filter(pl.col("question").is_in(top_questions))
+        .select(["question", "value", "Dataset"])
+        .to_pandas()
+    )
+    g = sns.pointplot(
+        data=df,
+        x="value",
+        y="question",
+        hue="Dataset",
+        errorbar=("sd", 2),
+        linestyles="none",
+        order=top_questions,
+    )
+    g.set(
+        xlabel="SHAP value coefficient (impact of feature on model output)",
+        ylabel="Feature description",
+    )
+    handles, labels = g.get_legend_handles_labels()
+    sorted_labels, sorted_handles = zip(
+        *sorted(zip(labels, handles), key=lambda t: t[0])
+    )
+    g.legend(sorted_handles, sorted_labels, loc="lower left", title="Dataset")
+    g.autoscale(enable=True)
+    g.set_yticks(g.get_yticks())
+    labels = [textwrap.fill(label.get_text(), 75) for label in g.get_yticklabels()]
+    g.set_yticklabels(labels)
+    g.yaxis.grid(True)
+    # ax2 = g.twinx() # TODO add response
+    # ax2.set_yticks(g.get_yticks())
+    # right_labels = [label for label in g.get_yticklabels()]
+    # ax2.set_yticklabels(right_labels)
+    # ax2.set_ylabel("Response")
+    plt.axvline(x=0, color="black", linestyle="--")
+    plt.tight_layout()
+    plt.savefig(f"data/plots/shap_coefs.{FORMAT}", format=FORMAT)
+
+
+def grouped_shap_plot(shap_values, X, column_mapping):
+    plt.figure(figsize=(10, 8))
+    df = pl.DataFrame(pd.DataFrame(shap_values, columns=X.columns))
+    df = df.transpose(include_header=True, header_name="variable")
+    df = (
+        df.with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
         .group_by("dataset")
         .sum()
         .drop("variable")
     )
     columns = df.drop_in_place("dataset")
-    df = df.transpose(column_names=columns).to_numpy()
-    summary_plot(df, feature_names=columns.to_list(), show=True)
+    # X = (  # FIXME this is kinda funky; refactor
+    #     pl.DataFrame(X)
+    #     .transpose(include_header=True, header_name="variable")
+    #     .with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
+    #     .group_by("dataset")
+    #     .sum()
+    #     .drop("variable")
+    #     .transpose(column_names=columns)[1:]
+    #     .to_pandas()
+    #     .astype(float)
+    # )
+    df = df.transpose(column_names=columns).melt().with_columns(pl.col("value").abs())
+    mean_values = (
+        df.group_by("variable")
+        .mean()
+        .sort("value", descending=True)["variable"]
+        .to_list()
+    )
+    g = sns.pointplot(
+        data=df.to_pandas(),
+        x="value",
+        y="variable",
+        linestyles="none",
+        order=mean_values,
+    )
+    g.set(ylabel="Feature group", xlabel="Absolute summed SHAP values")
+    g.yaxis.grid(True)
+    plt.axvline(x=0, color="black", linestyle="--")
+    # summary_plot(df, features=X, show=False)
+    plt.tight_layout()
+    plt.savefig(f"data/plots/shap_grouped.{FORMAT}", format=FORMAT)
 
 
-def shap_clustermap(shap_values, feature_names, column_mapping):
-    column_colors = {
-        col: COLOR_MAPPING[dataset] for col, dataset in column_mapping.items()
-    }
-    colors = [column_colors[col] for col in feature_names[1:]]
+def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
+    plt.figure()
+    sns.set_theme(style="white", palette="deep")
+    sns.set_context("paper", font_scale=2.0)
+    column_colors = {}
+    color_mapping["ACEs"] = sns.color_palette("tab20")[-1]
+    color_mapping["Space and time"] = sns.color_palette("tab20")[-2]
+    for col, dataset in column_mapping.items():
+        column_colors[col] = color_mapping[dataset]
+    colors = [column_colors[col] for col in feature_names[1:] if col in column_colors]
     shap_df = pl.DataFrame(shap_values[:, 1:], schema=feature_names[1:]).to_pandas()
     shap_corr = shap_df.corr()
     g = sns.clustermap(
@@ -160,63 +191,57 @@ def shap_clustermap(shap_values, feature_names, column_mapping):
     values = g.ax_heatmap.collections[0].get_array().reshape(shap_corr.shape)  # type: ignore
     new_values = np.ma.array(values, mask=mask)
     g.ax_heatmap.collections[0].set_array(new_values)
-    handles = [Patch(facecolor=color) for color in COLOR_MAPPING.values()]
+    handles = [Patch(facecolor=color) for color in color_mapping.values()]
     plt.legend(
         handles,
-        COLOR_MAPPING.keys(),
+        color_mapping.keys(),
         title="Dataset",
         bbox_to_anchor=(1, 1),
         bbox_transform=plt.gcf().transFigure,
         loc="upper right",
     )
-    plt.show()
+    plt.tight_layout()
+    plt.savefig(f"data/plots/shap_clustermap.{FORMAT}", format=FORMAT)
 
 
-def plot(dataloader):
-    sns.set_theme(font_scale=1.5, style="whitegrid", palette="deep")
+def plot(config: Config, dataloader):
+    sns.set_theme(style="darkgrid", palette="deep")
+    sns.set_context("paper", font_scale=1.5)
+    predicted_vs_observed_plot()
+    names = [data["name"] for data in config.features.model_dump().values()]
+    # FIXME get better colors
+    color_mapping = dict(zip(names, sns.color_palette("tab20")))
     feature_names = (
-        pl.read_csv("data/analytic/test.csv")
+        pl.read_csv("data/analytic/test.csv", n_rows=1)
         .drop(["src_subject_id", "p_score"])
         .columns
     )
     test_dataloader = iter(dataloader)
     X, _ = next(test_dataloader)
-    X = X.view(-1, X.shape[2])
+    X = pd.DataFrame(X.view(-1, X.shape[2]), columns=feature_names)
     shap_values_list = torch_load("data/results/shap_values.pt")
-    shap_values = np.mean(shap_values_list, axis=0)
+    shap_values = np.mean(shap_values_list, axis=-1)
     shap_values = shap_values.reshape(-1, shap_values.shape[2])
-    assert X.shape[1] == len(feature_names)
-    summary_plot(
-        shap_values,
-        features=X,
-        show=True,
-    )
-    shap_by_year_plot(
-        shap_values_list=shap_values_list, X=X, feature_names=feature_names
-    )
-    column_mapping = make_column_mapping(join_on=["src_subject_id", "eventname"])
+    metadata = pl.read_csv("data/variables.csv")
+    shap_plot(metadata=metadata)
+    # FIXME move to make_variable_metadata
+    column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
+    weirdos = ["demo_sex_v2_1", "demo_sex_v2_3", "adi_percentile"]
+    column_mapping["total_core"] = "ACEs"
+    column_mapping["eventname"] = "Space and time"
+    for col in X.columns:
+        if any((weirdo in col for weirdo in weirdos)):
+            column_mapping[col] = "Demographics"
+        elif "site_id" in col:
+            column_mapping[col] = "Space and time"
     grouped_shap_plot(
         shap_values=shap_values,
-        feature_names=feature_names,
+        X=X,
         column_mapping=column_mapping,
     )
     shap_clustermap(
         shap_values=shap_values,
         feature_names=feature_names,
         column_mapping=column_mapping,
+        color_mapping=color_mapping,
     )
-    predicted_vs_observed()
-
-
-if __name__ == "__main__":
-    test = pd.read_csv("data/analytic/test.csv")
-    test_dataset = RNNDataset(dataset=test, target="p_score")
-    test_dataloader = DataLoader(
-        test_dataset,
-        batch_size=500,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=True,
-        collate_fn=collate,
-    )
-    plot(dataloader=test_dataloader)

@@ -1,16 +1,33 @@
 from sklearn.metrics import r2_score
-from abcd.evaluate import RACE_MAPPING, SEX_MAPPING
-from abcd.preprocess import EVENT_MAPPING
 import polars as pl
+
+RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
+SEX_MAPPING = {1: "Male", 0: "Female"}
+EVENT_MAPPING_1 = {
+    "baseline_year_1_arm_1": "0",
+    "1_year_follow_up_y_arm_1": "1",
+    "2_year_follow_up_y_arm_1": "2",
+    "3_year_follow_up_y_arm_1": "3",
+    "4_year_follow_up_y_arm_1": "4",
+}
+EVENT_MAPPING_2 = {0: "0", 1: "1", 2: "2", 3: "3", 4: "4"}
+COLUMNS = [
+    ("eventname", "Year"),
+    ("demo_sex_v2_1", "Sex"),
+    ("race_ethnicity", "Race/Ethnicity"),
+    ("interview_age", "Age"),
+]
 
 
 def make_follow_up_table():
-    df = pl.read_csv("data/analytic/dataset.csv")
+    df = pl.read_csv("data/analytic/dataset.csv").with_columns(
+        pl.col("eventname").replace(EVENT_MAPPING_2)
+    )
     labels = pl.read_csv("data/labels/factor_scores.csv").with_columns(
-        pl.col("eventname").replace(EVENT_MAPPING)
+        pl.col("eventname").replace(EVENT_MAPPING_1)
     )
     features = pl.read_csv("data/analytic/features.csv").with_columns(
-        pl.col("eventname").replace(EVENT_MAPPING)
+        pl.col("eventname").replace(EVENT_MAPPING_1)
     )
     df = (
         df.group_by("eventname")
@@ -36,87 +53,83 @@ def make_follow_up_table():
         .pivot(values="len", columns="Dataset", index="eventname")
         .rename({"eventname": "Year"})
     )
-    df.select("Year", "p-factor", "Predictors", "Joined").write_csv(
+    df.select("Year", "p-factor", "Predictors", "Joined").drop_nulls().write_csv(
         "data/results/tables/follow_up.csv"
     )
 
 
-# FIXME add correlation, add counts
+def make_analysis_demographics():
+    df = (
+        pl.read_csv(
+            "data/analytic/dataset.csv",
+            columns=[
+                "src_subject_id",
+                "eventname",
+                "p_score",
+                "demo_sex_v2_1",
+                "interview_age",
+            ],
+        )
+        .with_columns(pl.all().forward_fill().over("src_subject_id"))
+        .with_columns(
+            pl.col("eventname").replace(EVENT_MAPPING_2),
+            pl.col("demo_sex_v2_1").replace(SEX_MAPPING),
+            (pl.col("interview_age") / 12).round(0).cast(pl.Int32),
+        )
+    )
+    race = pl.read_csv(
+        "data/features/abcd_p_demo.csv",
+        columns=["src_subject_id", "eventname", "race_ethnicity"],
+    ).with_columns(
+        pl.col("race_ethnicity").replace(RACE_MAPPING),
+        pl.col("eventname").replace(EVENT_MAPPING_1),
+    )
+    df = df.join(race, on=["src_subject_id", "eventname"], how="inner")
+    print(df)
+    df.write_csv("data/demographics.csv")
+
+
+def make_p_factor_group(df: pl.DataFrame, group_name: str, variable_name: str):
+    return (
+        df.group_by(group_name)
+        .agg(
+            (
+                pl.col("p_score").mean().round(3).cast(pl.Utf8)
+                + " ± "
+                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
+            ).alias("Mean p-factor ± 2std"),
+            pl.col("src_subject_id").n_unique().alias("Count"),
+        )
+        .sort(group_name)
+        .rename({group_name: "Group"})
+        .with_columns(
+            pl.lit(variable_name).alias("Variable"), pl.col("Group").cast(pl.Utf8)
+        )
+    )
+
+
 def p_factor_table():
-    df = pl.read_csv("data/labels/factor_scores.csv", null_values="NA")
-    demographics = pl.read_csv("data/demographics.csv").with_columns(
-        pl.col("eventname")
+    df = pl.read_csv("data/demographics.csv")
+    dfs = [make_p_factor_group(df, column, name) for column, name in COLUMNS]
+    total = (
+        df.with_columns(
+            pl.lit("All").alias("Group"),
+            (
+                pl.col("p_score").mean().round(3).cast(pl.Utf8)
+                + " ± "
+                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
+            ).alias("Mean p-factor ± 2std"),
+            pl.col("src_subject_id").n_unique().alias("Count"),
+            pl.lit("All").alias("Variable"),
+        )
+        .select("Group", "Mean p-factor ± 2std", "Count", "Variable")
+        .head(1)
     )
     df = (
-        df.join(demographics, on=["src_subject_id", "eventname"], how="inner")
+        pl.concat([total] + dfs)
+        .select("Variable", "Group", "Mean p-factor ± 2std", "Count")
         .drop_nulls()
-        .with_columns(
-            pl.col("eventname").replace(EVENT_MAPPING),
-            pl.col("race_ethnicity").replace(RACE_MAPPING),
-            pl.col("sex").replace(SEX_MAPPING),
-        )
-        .filter(pl.col("sex") != "3")
     )
-    year = (
-        df.group_by("eventname")
-        .agg(
-            (
-                pl.col("p_score").mean().round(3).cast(pl.Utf8)
-                + " ± "
-                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("Mean p-factor ± 2std"),
-        )
-        .sort("eventname")
-        .rename({"eventname": "Group"})
-        .with_columns(pl.lit("Year").alias("Variable"), pl.col("Group").cast(pl.Utf8))
-    )
-    sex = (
-        df.group_by("sex")
-        .agg(
-            # pl.col("p_score").count().alias("count"),
-            (
-                pl.col("p_score").mean().round(3).cast(pl.Utf8)
-                + " ± "
-                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("Mean p-factor ± 2std"),
-        )
-        .sort("sex")
-        .rename({"sex": "Group"})
-        .with_columns(pl.lit("Sex").alias("Variable"))
-    )
-    # counts = df.select(pl.col("race_ethnicity").value_counts().alias("count"))
-    # print(counts)
-    race = (
-        df.group_by("race_ethnicity")
-        .agg(
-            (
-                pl.col("p_score").mean().round(3).cast(pl.Utf8)
-                + " ± "
-                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("Mean p-factor ± 2std"),
-        )
-        .sort("race_ethnicity")
-        .rename({"race_ethnicity": "Group"})
-        .with_columns(pl.lit("Race/Ethnicity").alias("Variable"))
-    )
-    age = (
-        df.with_columns((pl.col("age") / 12).round(0).cast(pl.Int32).cast(pl.Utf8))
-        .group_by("age")
-        .agg(
-            (
-                pl.col("p_score").mean().round(3).cast(pl.Utf8)
-                + " ± "
-                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("Mean p-factor ± 2std"),
-        )
-        .sort("age")
-        .rename({"age": "Group"})
-        .with_columns(pl.lit("Age").alias("Variable"), pl.col("Group").cast(pl.Utf8))
-    )
-    df = pl.concat([sex, year, race, age]).select(
-        "Variable", "Group", "Mean p-factor ± 2std"
-    )
-    print(df)
     df.write_csv("data/results/tables/p_factors.csv")
 
 
@@ -124,51 +137,51 @@ def apply_r2(args) -> pl.Series:
     return pl.Series([r2_score(y_true=args[0], y_pred=args[1])], dtype=pl.Float32)
 
 
+def make_r2_group(df: pl.DataFrame, group_name: str, variable_name: str):
+    return (
+        df.group_by(group_name)
+        .agg(
+            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"),
+            pl.col("src_subject_id").n_unique().alias("Subjects"),
+        )
+        .rename({group_name: "Group"})
+        .sort("Group")
+        .with_columns(
+            pl.lit(variable_name).alias("Variable"), pl.col("Group").cast(pl.Utf8)
+        )
+        .select("Variable", "Group", "r2", "Subjects")
+    )
+
+
 def r2_table():
-    df = pl.read_csv("data/results/predicted_vs_observed.csv").with_columns(
-        # pl.col("eventname").replace(),
-        pl.col("race_ethnicity").replace(RACE_MAPPING),
-        pl.col("sex").replace(SEX_MAPPING),
-    )
-    year = (
-        df.group_by("eventname")
-        .agg(pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"))
-        .rename({"eventname": "Group"})
-        .with_columns(pl.lit("Year").alias("Variable"), pl.col("Group").cast(pl.Utf8))
-        .sort("Group")
-    )
-    sex = (
-        df.group_by("sex")
-        .agg(pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"))
-        .rename({"sex": "Group"})
-        .with_columns(pl.lit("Sex").alias("Variable"))
-        .sort("Group")
-    )
-    race = (
-        df.group_by("race_ethnicity")
-        .agg(pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"))
-        .rename({"race_ethnicity": "Group"})
-        .with_columns(pl.lit("Race/Ethnicity").alias("Variable"))
-        .sort("Group")
-    )
-    age = (
-        df.with_columns((pl.col("age") / 12).round(0).cast(pl.Int32).cast(pl.Utf8))
-        .group_by("age")
-        .agg(pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"))
-        .rename({"age": "Group"})
-        .with_columns(pl.lit("Age").alias("Variable"))
-        .sort("Group")
-        .filter(pl.col("r2") > 0)
+    df = pl.read_csv("data/results/predicted_vs_observed.csv")
+    dfs = [make_r2_group(df, column, name) for column, name in COLUMNS]
+    total = (
+        df.with_columns(
+            pl.lit("All").alias("Variable"),
+            pl.lit("All").alias("Group"),
+            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"),
+            pl.col("src_subject_id").n_unique().alias("Subjects"),
+        )
+        .select("Variable", "Group", "r2", "Subjects")
+        .head(1)
     )
     df = (
-        pl.concat([year, sex, race, age])
-        .select("Variable", "Group", "r2")
+        pl.concat([total] + dfs)
         .with_columns(pl.col("r2").round(2))
+        .filter(pl.col("r2") > 0)
     )
-    df.write_csv("data/results/r2_by_event.csv")
+    df.write_csv("data/results/tables/r2_by_event.csv")
+
+
+def make_tables():
+    make_follow_up_table()
+    p_factor_table()
+    r2_table()
 
 
 if __name__ == "__main__":
-    # make_follow_up_table()
+    make_analysis_demographics()
+    make_follow_up_table()
     p_factor_table()
-    # r2_table()
+    r2_table()

@@ -27,7 +27,6 @@ class Training(BaseModel):
     batch_size: int
     max_epochs: int
     gradient_clip: float
-    # swa_lr: float
 
 
 class Logging(BaseModel):
@@ -48,6 +47,36 @@ class Model(BaseModel):
     dropout: dict[str, float]
 
 
+class Data(BaseModel):
+    name: str
+    respondent: str
+    columns: list[str]
+
+
+class Features(BaseModel):
+    abcd_p_demo: Data
+    led_l_adi: Data
+    abcd_y_lt: Data
+    abcd_aces: Data
+    ce_p_fes: Data
+    ce_y_fes: Data
+    ce_p_nsc: Data
+    ce_y_nsc: Data
+    ce_y_pm: Data
+    ce_p_psb: Data
+    ce_y_psb: Data
+    ce_y_srpf: Data
+    nt_p_stq: Data
+    nt_y_st: Data
+    ph_p_sds: Data
+    su_p_pr: Data
+    mri_y_dti_fa_fs_at: Data
+    mri_y_rsfmr_cor_gp_gp: Data
+    mri_y_tfmr_sst_csvcg_dsk: Data
+    mri_y_tfmr_mid_alrvn_dsk: Data
+    mri_y_tfmr_nback_2b_dsk: Data
+
+
 class Config(BaseModel):
     fast_dev_run: bool
     random_seed: int
@@ -56,12 +85,15 @@ class Config(BaseModel):
     refit: bool
     evaluate: bool
     plot: bool
+    tables: bool
     n_trials: int
     verbose: bool
     train_size: float
     n_trials: int
     method: str
+    join_on: list[str]
     filepaths: Filepaths
+    features: Features
     training: Training
     logging: Logging
     optimizer: Optimizer
