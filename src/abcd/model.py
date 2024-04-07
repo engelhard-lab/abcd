@@ -29,14 +29,35 @@ class RNN(nn.Module):
 
     def forward(self, x):
         out, _ = self.rnn(x)
-        out = self.fc(out)  # [:, -1, :] for last hidden state
+        out = self.fc(out)
         return out
+
+
+# def make_model(method: str):
+#     match method:
+#         case "rnn":
+#             return RNN(
+#                 input_dim=input_dim,
+#                 output_dim=output_dim,
+#                 hidden_dim=hidden_dim,
+#                 num_layers=num_layers,
+#                 dropout=dropout,
+#             )
+#         case "mlp":
+#             return MLPModel(
+#                 input_dim=input_dim,
+#                 hidden_dim=hidden_dim,
+#                 num_layers=num_layers,
+#                 dropout=dropout,
+#                 output_dim=output_dim,
+#             )
+#         case "linear":
+#             return LinearModel(input_dim=input_dim, output_dim=output_dim)
 
 
 class Network(LightningModule):
     def __init__(
         self,
-        # method: str,
         input_dim: int,
         output_dim: int,
         lr: float,
@@ -48,7 +69,6 @@ class Network(LightningModule):
         dropout: float = 0.0,
     ):
         super().__init__()
-        # if method == "rnn":
         self.model = RNN(
             input_dim=input_dim,
             output_dim=output_dim,
@@ -56,16 +76,6 @@ class Network(LightningModule):
             num_layers=num_layers,
             dropout=dropout,
         )
-        # elif method == "mlp":
-        #     self.model = MLPModel(
-        #         input_dim=input_dim,
-        #         hidden_dim=hidden_dim,
-        #         num_layers=num_layers,
-        #         dropout=dropout,
-        #         output_dim=output_dim,
-        #     )
-        # elif method == "linear":
-        #     self.model = LinearModel(input_dim=input_dim, output_dim=output_dim)
         self.criterion = nn.MSELoss()
         self.train_metric = R2Score(num_outputs=output_dim, multioutput="raw_values")
         self.val_metric = R2Score(num_outputs=output_dim, multioutput="raw_values")

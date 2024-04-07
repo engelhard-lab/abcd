@@ -1,4 +1,3 @@
-from matplotlib import legend
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
@@ -18,6 +17,7 @@ FORMAT = "png"
 
 def predicted_vs_observed_plot():
     df = pl.read_csv("data/results/predicted_vs_observed.csv")
+    print(df)
     df = df.rename(
         {
             "eventname": "Year",
@@ -46,9 +46,7 @@ def predicted_vs_observed_plot():
         labels = group["Group"].unique().tolist()
         for i, hue_category in enumerate(labels):
             hue_subset = group[group["Group"] == hue_category]
-            sns.regplot(
-                x="y_true", y="y_pred", data=hue_subset, color=palette[i], ax=ax
-            )
+            sns.barplot(x="Group", y="r2", data=hue_subset, color=palette[i], ax=ax)
         handles = [Patch(facecolor=palette[i]) for i in range(len(labels))]
         ax.legend(
             handles=handles,
@@ -70,22 +68,39 @@ def predicted_vs_observed_plot():
 
 
 def shap_plot(metadata):
+    n_display = 20
     plt.figure(figsize=(16, 10))
     metadata = metadata.rename(
         {"column": "variable", "dataset": "Dataset"}
     ).with_columns((pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset"))
     df = pl.read_csv("data/results/shap_coefs.csv")
-    print(df.filter(pl.col("variable").eq("total_core")))
-    print(metadata.filter(pl.col("variable").eq("total_core")))
     df = df.join(other=metadata, on="variable", how="inner")
+    # print(pl.col("Dataset").eq(pl.lit("Adverse childhood experiences")))
+    f = pl.col("Dataset").eq(pl.lit("Adverse childhood experiences Parent"))
+    print(df.filter(f))
+    df = df.with_columns(  # FIXME move to variable.csv generation code
+        pl.when(pl.col("variable").eq(pl.lit("total_core")))
+        .then(pl.lit("Adverse childhood experiences"))
+        .when(pl.col("variable").eq(pl.lit("eventname")))
+        .then(pl.lit("Measurement year"))
+        .otherwise(pl.col("question"))
+        .alias("question")
+    ).with_columns(
+        pl.when(pl.col("variable").eq(pl.lit("eventname")))
+        .then(pl.lit("Spatiotemporal"))
+        .otherwise(pl.col("Dataset"))
+        .alias("Dataset")
+    )
+    print(df)
     top_questions = (
         df.group_by("question")
         .agg(pl.col("value").abs().mean())
         .sort(by="value")
-        .tail(20)["question"]
+        .tail(n_display)["question"]
         .reverse()
         .to_list()
     )
+    print(top_questions)
     df = (
         df.filter(pl.col("question").is_in(top_questions))
         .select(["question", "value", "Dataset"])
@@ -163,7 +178,6 @@ def grouped_shap_plot(shap_values, X, column_mapping):
     g.set(ylabel="Feature group", xlabel="Absolute summed SHAP values")
     g.yaxis.grid(True)
     plt.axvline(x=0, color="black", linestyle="--")
-    # summary_plot(df, features=X, show=False)
     plt.tight_layout()
     plt.savefig(f"data/plots/shap_grouped.{FORMAT}", format=FORMAT)
 
@@ -174,7 +188,7 @@ def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
     sns.set_context("paper", font_scale=2.0)
     column_colors = {}
     color_mapping["ACEs"] = sns.color_palette("tab20")[-1]
-    color_mapping["Space and time"] = sns.color_palette("tab20")[-2]
+    color_mapping["Spatiotemporal"] = sns.color_palette("tab20")[-2]
     for col, dataset in column_mapping.items():
         column_colors[col] = color_mapping[dataset]
     colors = [column_colors[col] for col in feature_names[1:] if col in column_colors]
@@ -207,13 +221,11 @@ def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
 def plot(config: Config, dataloader):
     sns.set_theme(style="darkgrid", palette="deep")
     sns.set_context("paper", font_scale=1.5)
-    predicted_vs_observed_plot()
+    # predicted_vs_observed_plot()
     names = [data["name"] for data in config.features.model_dump().values()]
-    # FIXME get better colors
-    color_mapping = dict(zip(names, sns.color_palette("tab20")))
     feature_names = (
         pl.read_csv("data/analytic/test.csv", n_rows=1)
-        .drop(["src_subject_id", "p_score"])
+        .drop(["src_subject_id", "p_factor"])
         .columns
     )
     test_dataloader = iter(dataloader)
@@ -224,21 +236,13 @@ def plot(config: Config, dataloader):
     shap_values = shap_values.reshape(-1, shap_values.shape[2])
     metadata = pl.read_csv("data/variables.csv")
     shap_plot(metadata=metadata)
-    # FIXME move to make_variable_metadata
     column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
-    weirdos = ["demo_sex_v2_1", "demo_sex_v2_3", "adi_percentile"]
-    column_mapping["total_core"] = "ACEs"
-    column_mapping["eventname"] = "Space and time"
-    for col in X.columns:
-        if any((weirdo in col for weirdo in weirdos)):
-            column_mapping[col] = "Demographics"
-        elif "site_id" in col:
-            column_mapping[col] = "Space and time"
     grouped_shap_plot(
         shap_values=shap_values,
         X=X,
         column_mapping=column_mapping,
     )
+    color_mapping = dict(zip(names, sns.color_palette("tab20")))
     shap_clustermap(
         shap_values=shap_values,
         feature_names=feature_names,

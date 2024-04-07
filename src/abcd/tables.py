@@ -65,7 +65,7 @@ def make_analysis_demographics():
             columns=[
                 "src_subject_id",
                 "eventname",
-                "p_score",
+                "p_factor",
                 "demo_sex_v2_1",
                 "interview_age",
             ],
@@ -94,10 +94,10 @@ def make_p_factor_group(df: pl.DataFrame, group_name: str, variable_name: str):
         df.group_by(group_name)
         .agg(
             (
-                pl.col("p_score").mean().round(3).cast(pl.Utf8)
+                pl.col("p_factor").mean().round(3).cast(pl.Utf8)
                 + " ± "
-                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("Mean p-factor ± 2std"),
+                + pl.col("p_factor").std().mul(2).round(2).cast(pl.Utf8)
+            ).alias("p-factor"),
             pl.col("src_subject_id").n_unique().alias("Count"),
         )
         .sort(group_name)
@@ -115,19 +115,19 @@ def p_factor_table():
         df.with_columns(
             pl.lit("All").alias("Group"),
             (
-                pl.col("p_score").mean().round(3).cast(pl.Utf8)
+                pl.col("p_factor").mean().round(3).cast(pl.Utf8)
                 + " ± "
-                + pl.col("p_score").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("Mean p-factor ± 2std"),
+                + pl.col("p_factor").std().mul(2).round(2).cast(pl.Utf8)
+            ).alias("p-factor"),
             pl.col("src_subject_id").n_unique().alias("Count"),
             pl.lit("All").alias("Variable"),
         )
-        .select("Group", "Mean p-factor ± 2std", "Count", "Variable")
+        .select("Group", "p-factor", "Count", "Variable")
         .head(1)
     )
     df = (
         pl.concat([total] + dfs)
-        .select("Variable", "Group", "Mean p-factor ± 2std", "Count")
+        .select("Variable", "Group", "p-factor", "Count")
         .drop_nulls()
     )
     df.write_csv("data/results/tables/p_factors.csv")
@@ -141,7 +141,7 @@ def make_r2_group(df: pl.DataFrame, group_name: str, variable_name: str):
     return (
         df.group_by(group_name)
         .agg(
-            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"),
+            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("R2"),
             pl.col("src_subject_id").n_unique().alias("Subjects"),
         )
         .rename({group_name: "Group"})
@@ -149,7 +149,7 @@ def make_r2_group(df: pl.DataFrame, group_name: str, variable_name: str):
         .with_columns(
             pl.lit(variable_name).alias("Variable"), pl.col("Group").cast(pl.Utf8)
         )
-        .select("Variable", "Group", "r2", "Subjects")
+        .select("Variable", "Group", "R2", "Subjects")
     )
 
 
@@ -160,16 +160,16 @@ def r2_table():
         df.with_columns(
             pl.lit("All").alias("Variable"),
             pl.lit("All").alias("Group"),
-            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("r2"),
+            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("R2"),
             pl.col("src_subject_id").n_unique().alias("Subjects"),
         )
-        .select("Variable", "Group", "r2", "Subjects")
+        .select("Variable", "Group", "R2", "Subjects")
         .head(1)
     )
     df = (
         pl.concat([total] + dfs)
-        .with_columns(pl.col("r2").round(2))
-        .filter(pl.col("r2") > 0)
+        .with_columns(pl.col("R2").round(2))
+        .filter(pl.col("R2") > 0)
     )
     df.write_csv("data/results/tables/r2_by_event.csv")
 

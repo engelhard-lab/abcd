@@ -43,7 +43,7 @@ def r2_results(y_pred, y_true):
             columns=[
                 "src_subject_id",
                 "eventname",
-                "p_score",
+                "p_factor",
                 "demo_sex_v2_1",
                 "interview_age",
             ],
@@ -83,7 +83,7 @@ def make_shap_values(model, data_module):
 def regress_shap_values(dataloader):
     feature_names = (
         pl.read_csv("data/analytic/test.csv", n_rows=1)
-        .drop(["src_subject_id", "p_score"])
+        .drop(["src_subject_id", "p_factor"])
         .columns
     )
     test_dataloader = iter(dataloader)

@@ -6,6 +6,7 @@ class Filepaths(BaseModel):
     data: Path
     features: Path
     labels: Path
+    cbcl_labels: Path
     checkpoints: Path
     logs: Path
     train: Path
@@ -16,6 +17,7 @@ class Filepaths(BaseModel):
         super().__init__(**data)
         self.features = self.data / self.features
         self.labels = self.data / self.labels
+        self.labels = self.data / self.cbcl_labels
         self.checkpoints = self.data / self.checkpoints
         self.logs = self.data / self.logs
         self.train = self.data / self.train
@@ -51,6 +53,11 @@ class Data(BaseModel):
     name: str
     respondent: str
     columns: list[str]
+
+
+class Labels(BaseModel):
+    p_factor: str
+    cbcl_labels: list[str]
 
 
 class Features(BaseModel):
@@ -92,7 +99,9 @@ class Config(BaseModel):
     n_trials: int
     method: str
     join_on: list[str]
+    target: str
     filepaths: Filepaths
+    labels: Labels
     features: Features
     training: Training
     logging: Logging

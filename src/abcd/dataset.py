@@ -1,23 +1,28 @@
 from torch import tensor
 from lightning import LightningDataModule
-from torch.utils.data import Dataset, DataLoader  # , TensorDataset
+from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 
-def make_tensor_dataset(dataset, target):
+def make_tensor_dataset(dataset, targets: str | list[str]):
     data = []
     for _, subject in dataset.groupby("src_subject_id"):
-        p_score = subject.pop(target)
+        match targets:
+            case str():
+                labels = subject.pop(targets)
+            case list():
+                labels = subject[targets]
+                subject = subject.drop(labels, axis=1)
         subject.pop("src_subject_id")
         features = tensor(subject.to_numpy()).float()
-        label = tensor(p_score.to_numpy()).float()
+        label = tensor(labels.to_numpy()).float()
         data.append((features, label))
     return data
 
 
 class RNNDataset(Dataset):
-    def __init__(self, dataset, target: str) -> None:
-        self.dataset = make_tensor_dataset(dataset, target)
+    def __init__(self, dataset, targets: str) -> None:
+        self.dataset = make_tensor_dataset(dataset, targets)
 
     def __len__(self):
         return len(self.dataset)

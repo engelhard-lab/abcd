@@ -28,7 +28,7 @@ def main():
         batch_size=config.training.batch_size,
         num_workers=cpu_count(),
         dataset_class=RNNDataset,
-        target="p_score",
+        target=config.target,
     )
     input_dim = train.shape[1] - 2
     if config.tune:
@@ -45,9 +45,12 @@ def main():
         with open("data/studies/study.pkl", "rb") as f:
             study = pickle.load(f)
         if config.refit:
+            output_dim = (
+                1 if config.target == "p_factor" else len(config.labels.cbcl_labels)
+            )
             model = Network(
                 input_dim=input_dim,
-                output_dim=1,
+                output_dim=output_dim,
                 momentum=config.optimizer.momentum,
                 nesterov=config.optimizer.nesterov,
                 **study.best_params,
@@ -68,7 +71,7 @@ def main():
         batch_size=500,
         num_workers=cpu_count(),
         dataset_class=RNNDataset,
-        target="p_score",
+        target="p_factor",
     )
     if config.evaluate:
         evaluate_model(config=config, model=model, data_module=data_module)
