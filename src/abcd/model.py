@@ -93,7 +93,7 @@ class Network(LightningModule):
         x, y = batch
         predictions = self(x)
         mask = ~y.isnan()
-        y_masked = y[mask].unsqueeze(1)
+        y_masked = y[mask]  # TODO .unsqueeze(1)
         predictions_masked = predictions[mask]
         loss = self.criterion(predictions_masked, y_masked)
         self.log(f"{step_type}_loss", loss, prog_bar=True)

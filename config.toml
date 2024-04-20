@@ -1,6 +1,6 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = true
+regenerate = false
 tune = false
 refit = false
 evaluate = false
@@ -11,14 +11,16 @@ train_size = 0.8
 n_trials = 64
 method = "rnn"
 join_on = ["src_subject_id", "eventname"]
-target = "p_factor"                       # choose from: "p_factor" or "cbcl"
+# choose from: "p_factor" or "cbcl"
+target = "cbcl"
 
 [filepaths]
 data = "data/"
 features = "features/"
 labels = "labels/p_factors.csv"
-cbcl_labels = "labels/cbcl.csv"
-checkpoints = "checkpoints"
+cbcl_labels = "labels/mh_p_cbcl.csv"
+# FIXME should update based on config.target
+checkpoints = "checkpoints_cbcl"
 logs = "lightning_logs"
 train = "analytic/train.csv"
 val = "analytic/val.csv"
@@ -26,7 +28,7 @@ test = "analytic/test.csv"
 
 [training]
 batch_size = 1024
-max_epochs = 100
+max_epochs = 200
 gradient_clip = 1.0
 
 [optimizer]
@@ -45,10 +47,10 @@ log = true
 hidden_dim = [16, 32, 64, 128]
 [model.dropout]
 low = 0.0
-high = 0.5
+high = 0.75
 [model.num_layers]
 low = 1
-high = 5
+high = 4
 
 [logging]
 checkpoint_every_n_steps = 1

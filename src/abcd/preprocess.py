@@ -121,23 +121,25 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
-def make_p_factor_labels(filepath: Path, label: str) -> pl.DataFrame:
+def make_labels(filepath: Path, columns: str | list[str]) -> pl.DataFrame:
     return (
-        pl.read_csv(filepath, null_values="NA")
-        .with_columns(pl.col(label).shift(-1).over("src_subject_id"))
+        pl.read_csv(filepath, columns=columns)
+        .with_columns(pl.col(columns).shift(-1).over("src_subject_id"))
         .drop_nulls()
     )
 
 
-def make_labels(config: Config):
+def get_labels(config: Config):
     match config.target:
         case "p_factor":
-            return make_p_factor_labels(
-                filepath=config.filepaths.labels, label=config.labels.p_factor
+            return make_labels(
+                filepath=config.filepaths.labels,
+                columns=config.join_on + [config.labels.p_factor],
             )
         case "cbcl":
-            return pl.read_csv(
-                config.filepaths.cbcl_labels, columns=config.labels.cbcl_labels
+            return make_labels(
+                filepath=config.filepaths.cbcl_labels,
+                columns=config.join_on + config.labels.cbcl_labels,
             )
         case _:
             raise ValueError(
@@ -148,7 +150,7 @@ def make_labels(config: Config):
 def make_dataset(dfs: list[pl.DataFrame], config: Config):
     features = join_dataframes(dfs=dfs, join_on=config.join_on, how="outer_coalesce")
     features.write_csv("data/analytic/features.csv")
-    labels = make_labels(config=config)
+    labels = get_labels(config=config)
     df = (
         labels.join(other=features, on=config.join_on, how="inner")
         .with_columns(pl.col("eventname").replace(EVENT_MAPPING))
@@ -169,16 +171,17 @@ def make_splits(df, config: Config):
     X_train = pl.concat(X_train).to_pandas()
     X_val = pl.concat(X_val).to_pandas()
     X_test = pl.concat(X_test).to_pandas()
-    X_test.write_csv("data/test_untransformed.csv", index=False)
+    X_test.to_csv("data/test_untransformed.csv", index=False)
     match config.target:
         case "p_factor":
             y_train = X_train.pop("p_factor")
             y_val = X_val.pop("p_factor")
             y_test = X_test.pop("p_factor")
         case "cbcl":
-            y_train = X_train[config.labels.cbcl_labels]
-            y_val = X_val[config.labels.cbcl_labels]
-            y_test = X_test[config.labels.cbcl_labels]
+            scaler = StandardScaler()
+            y_train = scaler.fit_transform(X_train[config.labels.cbcl_labels])
+            y_val = scaler.transform(X_val[config.labels.cbcl_labels])
+            y_test = scaler.transform(X_test[config.labels.cbcl_labels])
             X_train = X_train.drop(config.labels.cbcl_labels, axis=1)
             X_val = X_val.drop(config.labels.cbcl_labels, axis=1)
             X_test = X_test.drop(config.labels.cbcl_labels, axis=1)

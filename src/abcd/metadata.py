@@ -13,6 +13,8 @@ def rename_questions() -> pl.Expr:
         .then(pl.lit("Parent highest education"))
         .when(pl.col("column").str.contains("demo_comb_income_v2"))
         .then(pl.lit("Household income"))
+        .when(pl.col("column").eq(pl.lit("eventname")))
+        .then(pl.lit("Measurement year"))
         .otherwise(pl.col("question"))
         .alias("question")
     )

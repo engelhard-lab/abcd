@@ -17,7 +17,7 @@ class Filepaths(BaseModel):
         super().__init__(**data)
         self.features = self.data / self.features
         self.labels = self.data / self.labels
-        self.labels = self.data / self.cbcl_labels
+        self.cbcl_labels = self.data / self.cbcl_labels
         self.checkpoints = self.data / self.checkpoints
         self.logs = self.data / self.logs
         self.train = self.data / self.train

@@ -39,6 +39,7 @@ def predicted_vs_observed_plot():
     min_val = df.select(pl.min_horizontal(["y_true", "y_pred"]).min()).item()
     max_val = df.select(pl.max_horizontal(["y_true", "y_pred"]).max()).item()
     df = df.to_pandas()
+    print(df)
     fig, axes = plt.subplots(2, 2, figsize=(10, 10), sharex=True, sharey=True)
     groups = df.groupby("Variable")
     palette = sns.color_palette("deep")
@@ -46,7 +47,8 @@ def predicted_vs_observed_plot():
         labels = group["Group"].unique().tolist()
         for i, hue_category in enumerate(labels):
             hue_subset = group[group["Group"] == hue_category]
-            sns.barplot(x="Group", y="r2", data=hue_subset, color=palette[i], ax=ax)
+            print(hue_subset)
+            sns.barplot(x="Group", y="R2", data=hue_subset, color=palette[i], ax=ax)
         handles = [Patch(facecolor=palette[i]) for i in range(len(labels))]
         ax.legend(
             handles=handles,
@@ -75,23 +77,6 @@ def shap_plot(metadata):
     ).with_columns((pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset"))
     df = pl.read_csv("data/results/shap_coefs.csv")
     df = df.join(other=metadata, on="variable", how="inner")
-    # print(pl.col("Dataset").eq(pl.lit("Adverse childhood experiences")))
-    f = pl.col("Dataset").eq(pl.lit("Adverse childhood experiences Parent"))
-    print(df.filter(f))
-    df = df.with_columns(  # FIXME move to variable.csv generation code
-        pl.when(pl.col("variable").eq(pl.lit("total_core")))
-        .then(pl.lit("Adverse childhood experiences"))
-        .when(pl.col("variable").eq(pl.lit("eventname")))
-        .then(pl.lit("Measurement year"))
-        .otherwise(pl.col("question"))
-        .alias("question")
-    ).with_columns(
-        pl.when(pl.col("variable").eq(pl.lit("eventname")))
-        .then(pl.lit("Spatiotemporal"))
-        .otherwise(pl.col("Dataset"))
-        .alias("Dataset")
-    )
-    print(df)
     top_questions = (
         df.group_by("question")
         .agg(pl.col("value").abs().mean())
@@ -218,34 +203,55 @@ def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
     plt.savefig(f"data/plots/shap_clustermap.{FORMAT}", format=FORMAT)
 
 
+def r2_plot():
+    column_mapping = {
+        "cbcl_scr_syn_anxdep_t": "Anxiety/Depression",
+        "cbcl_scr_syn_withdep_t": "Withdrawn/Depressed",
+        "cbcl_scr_syn_somatic_t": "Somatic Problems",
+        "cbcl_scr_syn_social_t": "Social Problems",
+        "cbcl_scr_syn_thought_t": "Thought Problems",
+        "cbcl_scr_syn_attention_t": "Attention Problems",
+        "cbcl_scr_syn_rulebreak_t": "Rule-Breaking Behavior",
+        "cbcl_scr_syn_aggressive_t": "Aggressive Behavior",
+    }
+    df = pl.read_csv("data/results/r2_cbcl.csv")
+    df = df.rename({"variable": "Label", "value": "R$^2$"}).with_columns(
+        pl.col("Label").replace(column_mapping)
+    )
+    sns.barplot(data=df.to_pandas(), x="R$^2$", y="Label", errorbar=("sd", 2))
+    plt.tight_layout()
+    plt.show()
+
+
 def plot(config: Config, dataloader):
     sns.set_theme(style="darkgrid", palette="deep")
     sns.set_context("paper", font_scale=1.5)
+    r2_plot()
     # predicted_vs_observed_plot()
-    names = [data["name"] for data in config.features.model_dump().values()]
-    feature_names = (
-        pl.read_csv("data/analytic/test.csv", n_rows=1)
-        .drop(["src_subject_id", "p_factor"])
-        .columns
-    )
-    test_dataloader = iter(dataloader)
-    X, _ = next(test_dataloader)
-    X = pd.DataFrame(X.view(-1, X.shape[2]), columns=feature_names)
-    shap_values_list = torch_load("data/results/shap_values.pt")
-    shap_values = np.mean(shap_values_list, axis=-1)
-    shap_values = shap_values.reshape(-1, shap_values.shape[2])
-    metadata = pl.read_csv("data/variables.csv")
-    shap_plot(metadata=metadata)
-    column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
-    grouped_shap_plot(
-        shap_values=shap_values,
-        X=X,
-        column_mapping=column_mapping,
-    )
-    color_mapping = dict(zip(names, sns.color_palette("tab20")))
-    shap_clustermap(
-        shap_values=shap_values,
-        feature_names=feature_names,
-        column_mapping=column_mapping,
-        color_mapping=color_mapping,
-    )
+    # names = [data["name"] for data in config.features.model_dump().values()]
+    # feature_names = (
+    #     pl.read_csv("data/analytic/test.csv", n_rows=1)
+    #     .drop(["src_subject_id", "p_factor"])
+    #     .columns
+    # )
+    # test_dataloader = iter(dataloader)
+    # X, _ = next(test_dataloader)
+    # X = pd.DataFrame(X.view(-1, X.shape[2]), columns=feature_names)
+    # shap_values_list = torch_load("data/results/shap_values.pt")
+    # shap_values = np.mean(shap_values_list, axis=-1)
+    # shap_values = shap_values.reshape(-1, shap_values.shape[2])
+    # metadata = pl.read_csv("data/variables.csv")
+    # shap_plot(metadata=metadata)
+    # column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
+    # grouped_shap_plot(
+    #     shap_values=shap_values,
+    #     X=X,
+    #     column_mapping=column_mapping,
+    # )
+    # color_mapping = dict(zip(names, sns.color_palette("tab20")))
+    # shap_clustermap(
+    #     shap_values=shap_values,
+    #     feature_names=feature_names,
+    #     column_mapping=column_mapping,
+    #     color_mapping=color_mapping,
+    # )

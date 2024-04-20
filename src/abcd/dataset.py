@@ -41,12 +41,12 @@ def collate(batch):
 
 class ABCDDataModule(LightningDataModule):
     def __init__(
-        self, train, val, test, batch_size, dataset_class, num_workers, target
+        self, train, val, test, batch_size, dataset_class, num_workers, targets
     ) -> None:
         super().__init__()
-        self.train_dataset = dataset_class(dataset=train, target=target)
-        self.val_dataset = dataset_class(dataset=val, target=target)
-        self.test_dataset = dataset_class(dataset=test, target=target)
+        self.train_dataset = dataset_class(dataset=train, targets=targets)
+        self.val_dataset = dataset_class(dataset=val, targets=targets)
+        self.test_dataset = dataset_class(dataset=test, targets=targets)
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.collate_fn = collate if dataset_class == RNNDataset else None
@@ -71,8 +71,8 @@ class ABCDDataModule(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
             collate_fn=self.collate_fn,
+            persistent_workers=True,
             multiprocessing_context="fork",
         )
 
@@ -83,7 +83,7 @@ class ABCDDataModule(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
             collate_fn=self.collate_fn,
+            persistent_workers=True,
             multiprocessing_context="fork",
         )

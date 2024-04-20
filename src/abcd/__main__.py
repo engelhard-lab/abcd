@@ -21,6 +21,13 @@ def main():
         config = Config(**load(f))
     seed_everything(config.random_seed)
     train, val, test = get_data(config, regenerate=config.regenerate)
+
+    if config.target == "p_factor":
+        targets = "p_factor"
+        output_dim = 1
+    else:
+        targets = config.labels.cbcl_labels
+        output_dim = len(targets)
     data_module = ABCDDataModule(
         train=train,
         val=val,
@@ -28,14 +35,15 @@ def main():
         batch_size=config.training.batch_size,
         num_workers=cpu_count(),
         dataset_class=RNNDataset,
-        target=config.target,
+        targets=targets,
     )
-    input_dim = train.shape[1] - 2
+    input_dim = train.shape[1] - output_dim - 1  # -1 for src_sub1ect_id
     if config.tune:
         study = tune(
             config=config,
             data_module=data_module,
             input_dim=input_dim,
+            output_dim=output_dim,
         )
         best_model_path = get_best_checkpoint(
             ckpt_folder=config.filepaths.checkpoints, mode="min"
@@ -45,9 +53,6 @@ def main():
         with open("data/studies/study.pkl", "rb") as f:
             study = pickle.load(f)
         if config.refit:
-            output_dim = (
-                1 if config.target == "p_factor" else len(config.labels.cbcl_labels)
-            )
             model = Network(
                 input_dim=input_dim,
                 output_dim=output_dim,
@@ -71,7 +76,7 @@ def main():
         batch_size=500,
         num_workers=cpu_count(),
         dataset_class=RNNDataset,
-        target="p_factor",
+        targets=targets,
     )
     if config.evaluate:
         evaluate_model(config=config, model=model, data_module=data_module)

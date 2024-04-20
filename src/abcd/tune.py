@@ -7,7 +7,7 @@ from abcd.model import Network, make_trainer
 from abcd.utils import cleanup_checkpoints
 
 
-def tune(config: Config, data_module, input_dim):
+def tune(config: Config, data_module, input_dim: int, output_dim: int):
     def objective(trial: Trial):
         params = {
             "hidden_dim": trial.suggest_categorical(
@@ -36,11 +36,10 @@ def tune(config: Config, data_module, input_dim):
         }
         model = Network(
             input_dim=input_dim,
-            output_dim=1,  # FIXME move to config
+            output_dim=output_dim,
             momentum=config.optimizer.momentum,
             nesterov=config.optimizer.nesterov,
             **params,
-            # batch_size=config.training.batch_size,
         )
         trainer, checkpoint_callback = make_trainer(config)
         trainer.fit(model, datamodule=data_module)

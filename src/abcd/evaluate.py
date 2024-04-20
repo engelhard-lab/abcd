@@ -1,5 +1,5 @@
-from cgi import test
 from shap import GradientExplainer
+from sklearn.metrics import r2_score
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -7,6 +7,7 @@ from sklearn.utils import resample
 from torch import concat, save, load as torch_load
 import polars as pl
 from tqdm import tqdm
+from abcd.config import Config
 from abcd.model import make_trainer
 import pandas as pd
 import numpy as np
@@ -28,12 +29,25 @@ def get_predictions(config, model, data_module):
         model=model, dataloaders=data_module.test_dataloader()
     )
     y_pred, y_true = zip(*predictions)
-    y_pred = concat(y_pred)
-    y_true = concat(y_true)
-    mask = ~y_true.isnan()
-    y_pred = y_pred[mask].numpy()
-    y_true = y_true[mask].numpy()
-    return y_pred.squeeze(1), y_true
+    # FIXME need to not mean when only one target?
+    y_pred = concat(y_pred).nanmean(dim=1)
+    y_true = concat(y_true).nanmean(dim=1)
+    # mask = ~y_true.isnan()
+    # y_pred = y_pred[mask].numpy()
+    # y_true = y_true[mask].numpy()
+    return y_pred, y_true
+
+
+def r2(y_pred, y_true, config: Config):
+    r2s = []
+    for _ in range(1000):
+        y_pred_resampled, y_true_resampled = resample(y_pred, y_true)
+        r2 = r2_score(
+            y_true=y_true_resampled, y_pred=y_pred_resampled, multioutput="raw_values"
+        )
+        r2s.append(r2)
+    r2 = pl.DataFrame(r2s, schema=config.labels.cbcl_labels).melt()
+    r2.write_csv(f"data/results/r2_{config.target}.csv")
 
 
 def r2_results(y_pred, y_true):
@@ -110,8 +124,9 @@ def regress_shap_values(dataloader):
     df.write_csv("data/results/shap_coefs.csv")
 
 
-def evaluate_model(config, model, data_module):
+def evaluate_model(config: Config, model, data_module):
     # make_shap_values(model, data_module)
     # regress_shap_values(dataloader=data_module.test_dataloader())
     y_pred, y_true = get_predictions(config, model, data_module)
-    r2_results(y_pred=y_pred, y_true=y_true)
+    # r2_results(y_pred=y_pred, y_true=y_true)
+    r2(y_pred=y_pred, y_true=y_true, config=config)
