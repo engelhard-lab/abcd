@@ -24,7 +24,7 @@ EVENT_MAPPING = {
 }
 
 
-def drop_null_columns(features, cutoff=0.25):
+def drop_null_columns(features: pl.DataFrame, cutoff=0.25) -> pl.DataFrame:
     null_proportion = features.null_count() / features.shape[0]
     columns_to_keep = (null_proportion < cutoff).transpose().to_series()
     return features.select(
@@ -90,7 +90,9 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         "srpf_",
         "_fc",
     )
-    transforms: defaultdict[str, Callable] = defaultdict(lambda: lambda df: df)
+    transforms: defaultdict[str, Callable[[pl.DataFrame], pl.DataFrame]] = defaultdict(
+        lambda: lambda df: df
+    )
     transforms.update(
         {
             "abcd_p_demo": make_demographics,
@@ -103,7 +105,7 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         df = pl.read_csv(
             source=config.filepaths.features / f"{filename}.csv",
             null_values=["", "null"],
-            infer_schema_length=50_000,
+            infer_schema_length=100_000,
         )
         if len(metadata["columns"]) > 0:
             columns = pl.col(config.join_on + metadata["columns"])
@@ -121,29 +123,49 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
-def make_labels(filepath: Path, columns: str | list[str]) -> pl.DataFrame:
-    return (
-        pl.read_csv(filepath, columns=columns)
+def make_labels(
+    filepath: Path,
+    columns: list[str],
+    task: str,
+    n_quantiles: int,
+    join_on: list[str],
+) -> pl.DataFrame:
+    df = (
+        pl.read_csv(filepath, columns=columns + join_on)
         .with_columns(pl.col(columns).shift(-1).over("src_subject_id"))
         .drop_nulls()
     )
+    if task == "classification":
+        labels = [str(i) for i in range(n_quantiles)]
+        df = df.with_columns(
+            pl.col(columns)
+            .qcut(quantiles=n_quantiles, labels=labels, allow_duplicates=True)
+            .cast(pl.Int32)
+        )
+    return df
 
 
 def get_labels(config: Config):
     match config.target:
-        case "p_factor":
+        case "binary":
             return make_labels(
                 filepath=config.filepaths.labels,
-                columns=config.join_on + [config.labels.p_factor],
+                columns=[config.labels.p_factor],
+                task=config.task,
+                n_quantiles=config.n_quantiles,
+                join_on=config.join_on,
             )
-        case "cbcl":
+        case "multioutput":
             return make_labels(
                 filepath=config.filepaths.cbcl_labels,
-                columns=config.join_on + config.labels.cbcl_labels,
+                columns=config.labels.cbcl_labels,
+                task=config.task,
+                n_quantiles=config.n_quantiles,
+                join_on=config.join_on,
             )
         case _:
             raise ValueError(
-                f"Invalid label option '{config.target}'. Choose from 'p_factor' or 'subscales'."
+                f"Invalid label option '{config.target}'. Choose from: 'binary' or 'multioutput'"
             )
 
 
@@ -173,11 +195,11 @@ def make_splits(df, config: Config):
     X_test = pl.concat(X_test).to_pandas()
     X_test.to_csv("data/test_untransformed.csv", index=False)
     match config.target:
-        case "p_factor":
+        case "binary":
             y_train = X_train.pop("p_factor")
             y_val = X_val.pop("p_factor")
             y_test = X_test.pop("p_factor")
-        case "cbcl":
+        case "multioutput":
             scaler = StandardScaler()
             y_train = scaler.fit_transform(X_train[config.labels.cbcl_labels])
             y_val = scaler.transform(X_val[config.labels.cbcl_labels])

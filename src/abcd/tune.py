@@ -3,7 +3,7 @@ from optuna import Trial, create_study
 from optuna.samplers import TPESampler
 
 from abcd.config import Config
-from abcd.model import Network, make_trainer
+from abcd.model import make_network, make_trainer
 from abcd.utils import cleanup_checkpoints
 
 
@@ -34,7 +34,10 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int):
                 high=config.optimizer.weight_decay["high"],
             ),
         }
-        model = Network(
+        model = make_network(
+            method=config.method,
+            target=config.target,
+            task=config.task,
             input_dim=input_dim,
             output_dim=output_dim,
             momentum=config.optimizer.momentum,

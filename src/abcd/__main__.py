@@ -2,13 +2,14 @@ from multiprocessing import cpu_count
 from tomllib import load
 import pickle
 from lightning import seed_everything
+from optuna import Study
 from sklearn import set_config
 
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
 from abcd.preprocess import get_data
 from abcd.config import Config
-from abcd.model import Network, make_trainer
+from abcd.model import Network, make_network, make_trainer
 from abcd.plots import plot
 from abcd.tables import make_tables
 from abcd.tune import tune
@@ -23,11 +24,10 @@ def main():
     train, val, test = get_data(config, regenerate=config.regenerate)
 
     if config.target == "p_factor":
-        targets = "p_factor"
-        output_dim = 1
+        targets = ["p_factor"]
     else:
         targets = config.labels.cbcl_labels
-        output_dim = len(targets)
+    output_dim = len(targets)
     data_module = ABCDDataModule(
         train=train,
         val=val,
@@ -37,7 +37,7 @@ def main():
         dataset_class=RNNDataset,
         targets=targets,
     )
-    input_dim = train.shape[1] - output_dim - 1  # -1 for src_sub1ect_id
+    input_dim = train.shape[1] - output_dim - 1  # -1 for src_subject_id
     if config.tune:
         study = tune(
             config=config,
@@ -51,9 +51,9 @@ def main():
         model = Network.load_from_checkpoint(best_model_path)
     else:
         with open("data/studies/study.pkl", "rb") as f:
-            study = pickle.load(f)
+            study: Study = pickle.load(f)
         if config.refit:
-            model = Network(
+            model = make_network(
                 input_dim=input_dim,
                 output_dim=output_dim,
                 momentum=config.optimizer.momentum,

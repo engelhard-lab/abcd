@@ -1,5 +1,9 @@
+from typing import Literal
 from pydantic import BaseModel
 from pathlib import Path
+
+Targets = Literal["binary", "multilabel", "multiclass"]
+Tasks = Literal["classification", "regression"]
 
 
 class Filepaths(BaseModel):
@@ -99,7 +103,9 @@ class Config(BaseModel):
     n_trials: int
     method: str
     join_on: list[str]
-    target: str
+    target: Targets
+    task: Tasks
+    n_quantiles: int
     filepaths: Filepaths
     labels: Labels
     features: Features
@@ -107,3 +113,9 @@ class Config(BaseModel):
     logging: Logging
     optimizer: Optimizer
     model: Model
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        self.filepaths.checkpoints = self.filepaths.checkpoints.with_stem(
+            self.filepaths.checkpoints.stem + self.target
+        )

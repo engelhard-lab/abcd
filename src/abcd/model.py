@@ -1,6 +1,7 @@
-from torch import nn
+from torch import nn, Tensor
 from torch.optim import SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torchvision.ops import MLP
 from lightning import LightningModule
 from lightning.pytorch.callbacks import (
     ModelCheckpoint,
@@ -9,14 +10,17 @@ from lightning.pytorch.callbacks import (
 )
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import Trainer
-from torchmetrics import R2Score
-from abcd.config import Config
+from torchmetrics.functional import (
+    r2_score,
+    auroc,
+    average_precision,
+)
+from abcd.config import Config, Targets, Tasks
 
 
 class RNN(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dim, num_layers, dropout):
         super().__init__()
-        self.hidden_dim = hidden_dim
         self.rnn = nn.RNN(
             input_dim,
             hidden_dim,
@@ -33,105 +37,80 @@ class RNN(nn.Module):
         return out
 
 
-# def make_model(method: str):
-#     match method:
-#         case "rnn":
-#             return RNN(
-#                 input_dim=input_dim,
-#                 output_dim=output_dim,
-#                 hidden_dim=hidden_dim,
-#                 num_layers=num_layers,
-#                 dropout=dropout,
-#             )
-#         case "mlp":
-#             return MLPModel(
-#                 input_dim=input_dim,
-#                 hidden_dim=hidden_dim,
-#                 num_layers=num_layers,
-#                 dropout=dropout,
-#                 output_dim=output_dim,
-#             )
-#         case "linear":
-#             return LinearModel(input_dim=input_dim, output_dim=output_dim)
-
-
 class Network(LightningModule):
     def __init__(
         self,
-        input_dim: int,
-        output_dim: int,
-        lr: float,
-        weight_decay: float,
-        momentum: float,
-        nesterov: bool,
-        hidden_dim: int = 128,
-        num_layers: int = 1,
-        dropout: float = 0.0,
+        model: nn.Module,
+        criterion: nn.Module,
+        optimizer: SGD,
+        scheduler: ReduceLROnPlateau,
+        target: Targets,
+        task: Tasks,
     ):
         super().__init__()
-        self.model = RNN(
-            input_dim=input_dim,
-            output_dim=output_dim,
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout,
-        )
-        self.criterion = nn.MSELoss()
-        self.train_metric = R2Score(num_outputs=output_dim, multioutput="raw_values")
-        self.val_metric = R2Score(num_outputs=output_dim, multioutput="raw_values")
-        self.test_metric = R2Score(num_outputs=output_dim, multioutput="raw_values")
-        self.lr = lr
-        self.weight_decay = weight_decay
-        self.momentum = momentum
-        self.nesterov = nesterov
-        self.save_hyperparameters(ignore=["model"])
+        self.model = model
+        self.criterion = criterion
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.target: Targets = target
+        self.task: Tasks = task
+        # self.save_hyperparameters(ignore=["model"])
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, inputs):
+        return self.model(inputs)
 
-    def step(self, batch, metric, step_type):
-        x, y = batch
-        predictions = self(x)
-        mask = ~y.isnan()
-        y_masked = y[mask]  # TODO .unsqueeze(1)
-        predictions_masked = predictions[mask]
-        loss = self.criterion(predictions_masked, y_masked)
-        self.log(f"{step_type}_loss", loss, prog_bar=True)
-        if step_type == "val":
-            r2 = metric(predictions_masked, y_masked).nanmean()
-            self.log(f"{step_type}_metric", r2, prog_bar=True)
+    def step(self, batch: tuple[Tensor, Tensor]):
+        inputs, labels = batch
+        outputs = self(inputs)
+        mask = ~labels.isnan()
+        labels = labels[mask]  # TODO .unsqueeze(1)
+        outputs = outputs[mask]
+        return outputs, labels
+
+    def regression_metrics(self, outputs, labels) -> dict:
+        loss = self.criterion(outputs, labels)
+        r2 = r2_score(outputs, labels, multioutput="raw_values").nanmean()
+        return {"loss": loss, "r2": r2}
+
+    def classification_metrics(self, outputs, labels) -> dict:
+        loss = self.criterion(outputs, labels)
+        auroc_score = auroc(outputs, labels, task=self.target)
+        ap = average_precision(outputs, labels, task=self.target)
+        return {"loss": loss, "auroc": auroc_score, "ap": ap}
+
+    def training_step(self, batch, batch_idx):
+        outputs, labels = self.step(batch)
+        loss = self.criterion(outputs, labels)
+        self.log("train_loss", loss, prog_bar=True)
         return loss
 
-    def training_step(self, train_batch, batch_idx):
-        return self.step(train_batch, self.train_metric, "train")
+    def validation_step(self, batch, batch_idx):
+        outputs, labels = self.step(batch)
+        loss = self.criterion(outputs, labels)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
 
-    def validation_step(self, val_batch, batch_idx):
-        return self.step(val_batch, self.val_metric, "val")
-
-    def test_step(self, test_batch, batch_idx):
-        return self.step(test_batch, self.test_metric, "test")
+    def test_step(self, batch, batch_idx):
+        outputs, labels = self.step(batch)
+        if self.task == "regression":
+            metrics = self.regression_metrics(outputs, labels)
+        elif self.task == "classification":
+            metrics = self.classification_metrics(outputs, labels)
+        self.log_dict(metrics)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        x, y = batch
-        predictions = self(x)
-        return predictions, y
+        inputs, labels = batch
+        outputs = self(inputs)
+        return outputs, labels
 
     def configure_optimizers(self):
-        optimizer = SGD(
-            self.parameters(),
-            lr=self.lr,
-            weight_decay=self.weight_decay,
-            momentum=self.momentum,
-            nesterov=self.nesterov,
-        )
-        scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=1)
         scheduler_config = {
-            "scheduler": scheduler,
+            "scheduler": self.scheduler,
             "monitor": "val_loss",
             "interval": "epoch",
-            "frequency": 1,
+            "frequency": 2,
         }
-        return {"optimizer": optimizer, "lr_scheduler": scheduler_config}
+        return {"optimizer": self.optimizer, "lr_scheduler": scheduler_config}
 
 
 def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
@@ -164,4 +143,85 @@ def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
             check_val_every_n_epoch=1,
         ),
         checkpoint_callback,
+    )
+
+
+def make_criterion(task: str):
+    match task:
+        case "classification":
+            return nn.CrossEntropyLoss()
+        case "regression":
+            return nn.MSELoss()
+        case _:
+            raise ValueError(
+                f"Invalid task '{task}'. Choose from: 'classification' or 'regression'"
+            )
+
+
+def make_model(
+    method: str,
+    input_dim: int,
+    hidden_dim: int,
+    output_dim: int,
+    num_layers: int,
+    dropout: float,
+):
+    match method:
+        case "rnn":
+            return RNN(
+                input_dim=input_dim,
+                output_dim=output_dim,
+                hidden_dim=hidden_dim,
+                num_layers=num_layers,
+                dropout=dropout,
+            )
+        case "mlp":
+            hidden_channels = [hidden_dim] * num_layers
+            return MLP(
+                in_channels=input_dim,
+                hidden_channels=hidden_channels + [output_dim],
+                dropout=dropout,
+            )
+        case _:
+            raise ValueError(f"Invalid method '{method}'. Choose from: 'rnn' or 'mlp'")
+
+
+def make_network(
+    method: str,
+    task: Tasks,
+    target: Targets,
+    input_dim: int,
+    hidden_dim: int,
+    output_dim: int,
+    num_layers: int,
+    dropout: float,
+    lr: float,
+    weight_decay: float,
+    momentum: float,
+    nesterov: bool,
+):
+    model = make_model(
+        method=method,
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        output_dim=output_dim,
+        num_layers=num_layers,
+        dropout=dropout,
+    )
+    criterion = make_criterion(task=task)
+    optimizer = SGD(
+        model.parameters(),
+        lr=lr,
+        weight_decay=weight_decay,
+        momentum=momentum,
+        nesterov=nesterov,
+    )
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=2)
+    return Network(
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        task=task,
+        target=target,
     )
