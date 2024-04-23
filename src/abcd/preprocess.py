@@ -126,53 +126,52 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
 def make_labels(
     filepath: Path,
     columns: list[str],
-    task: str,
-    n_quantiles: int,
-    join_on: list[str],
+    config: Config,
 ) -> pl.DataFrame:
     df = (
-        pl.read_csv(filepath, columns=columns + join_on)
-        .with_columns(pl.col(columns).shift(-1).over("src_subject_id"))
+        pl.read_csv(filepath, columns=columns + config.join_on)
+        .sort(config.join_on)
+        # .with_columns(pl.col(columns).shift(-1).over("src_subject_id"))
+        .with_columns(pl.col(columns).diff(n=1).over("src_subject_id"))
         .drop_nulls()
     )
-    if task == "classification":
-        labels = [str(i) for i in range(n_quantiles)]
+    if config.task == "classification":
+        bin_labels = [str(i) for i in range(config.n_quantiles)]
         df = df.with_columns(
             pl.col(columns)
-            .qcut(quantiles=n_quantiles, labels=labels, allow_duplicates=True)
+            .qcut(
+                quantiles=config.n_quantiles, labels=bin_labels, allow_duplicates=True
+            )
             .cast(pl.Int32)
         )
     return df
 
 
-def get_labels(config: Config):
+def get_labels(columns: list[str], config: Config):
     match config.target:
         case "binary":
-            return make_labels(
-                filepath=config.filepaths.labels,
-                columns=[config.labels.p_factor],
-                task=config.task,
-                n_quantiles=config.n_quantiles,
-                join_on=config.join_on,
-            )
+            filepath = config.filepaths.labels
         case "multioutput":
-            return make_labels(
-                filepath=config.filepaths.cbcl_labels,
-                columns=config.labels.cbcl_labels,
-                task=config.task,
-                n_quantiles=config.n_quantiles,
-                join_on=config.join_on,
-            )
+            filepath = config.filepaths.cbcl_labels
         case _:
             raise ValueError(
                 f"Invalid label option '{config.target}'. Choose from: 'binary' or 'multioutput'"
             )
+    return make_labels(
+        filepath=filepath,
+        columns=columns,
+        config=config,
+    )
 
 
 def make_dataset(dfs: list[pl.DataFrame], config: Config):
     features = join_dataframes(dfs=dfs, join_on=config.join_on, how="outer_coalesce")
     features.write_csv("data/analytic/features.csv")
-    labels = get_labels(config=config)
+    if config.target == "binary":
+        columns = [config.labels.p_factor]
+    elif config.target == "multioutput":
+        columns = config.labels.cbcl_labels
+    labels = get_labels(columns, config=config)
     df = (
         labels.join(other=features, on=config.join_on, how="inner")
         .with_columns(pl.col("eventname").replace(EVENT_MAPPING))

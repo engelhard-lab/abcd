@@ -9,11 +9,10 @@ from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
 from abcd.preprocess import get_data
 from abcd.config import Config
-from abcd.model import Network, make_network, make_trainer
+from abcd.model import make_model
 from abcd.plots import plot
 from abcd.tables import make_tables
 from abcd.tune import tune
-from abcd.utils import cleanup_checkpoints, get_best_checkpoint
 
 
 def main():
@@ -21,13 +20,16 @@ def main():
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
     seed_everything(config.random_seed)
+    match config.target:
+        case "binary":
+            targets = ["p_factor"]
+        case "multioutput":
+            targets = config.labels.cbcl_labels
+        case _:
+            raise ValueError(
+                f"Invalid target '{config.target}'. Choose from: 'p_factor' or 'multioutput'"
+            )
     train, val, test = get_data(config, regenerate=config.regenerate)
-
-    if config.target == "p_factor":
-        targets = ["p_factor"]
-    else:
-        targets = config.labels.cbcl_labels
-    output_dim = len(targets)
     data_module = ABCDDataModule(
         train=train,
         val=val,
@@ -37,7 +39,13 @@ def main():
         dataset_class=RNNDataset,
         targets=targets,
     )
-    input_dim = train.shape[1] - output_dim - 1  # -1 for src_subject_id
+    n_targets = len(targets)
+    match config.task:
+        case "classification":
+            output_dim = config.n_quantiles
+        case "regression":
+            output_dim = n_targets
+    input_dim = train.shape[1] - n_targets - 1  # -1 for src_subject_id
     if config.tune:
         study = tune(
             config=config,
@@ -45,39 +53,18 @@ def main():
             input_dim=input_dim,
             output_dim=output_dim,
         )
-        best_model_path = get_best_checkpoint(
-            ckpt_folder=config.filepaths.checkpoints, mode="min"
-        )
-        model = Network.load_from_checkpoint(best_model_path)
     else:
         with open("data/studies/study.pkl", "rb") as f:
             study: Study = pickle.load(f)
-        if config.refit:
-            model = make_network(
-                input_dim=input_dim,
-                output_dim=output_dim,
-                momentum=config.optimizer.momentum,
-                nesterov=config.optimizer.nesterov,
-                **study.best_params,
-            )
-            trainer, _ = make_trainer(config)
-            trainer.fit(model, datamodule=data_module)
-            cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
-        else:
-            best_model_path = get_best_checkpoint(
-                ckpt_folder=config.filepaths.checkpoints, mode="min"
-            )
-            model = Network.load_from_checkpoint(best_model_path)
-    print(study.best_params)
-    data_module = ABCDDataModule(
-        train=train,
-        val=val,
-        test=test,
-        batch_size=500,
-        num_workers=cpu_count(),
-        dataset_class=RNNDataset,
-        targets=targets,
+    model = make_model(
+        method=config.method,
+        task=config.task,
+        target=config.target,
+        input_dim=input_dim,
+        output_dim=output_dim,
+        **study.best_params,
     )
+    print(study.best_params)
     if config.evaluate:
         evaluate_model(config=config, model=model, data_module=data_module)
     if config.plot:

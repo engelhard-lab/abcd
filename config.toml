@@ -1,7 +1,7 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = true
-tune = false
+regenerate = false
+tune = true
 refit = false
 evaluate = false
 plot = false

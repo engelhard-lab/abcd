@@ -36,7 +36,7 @@ def collate(batch):
     sequence, label = zip(*batch)
     sequence = pad_sequence(sequence, batch_first=True)
     label = pad_sequence(label, batch_first=True, padding_value=float("nan"))
-    return sequence, label
+    return sequence, label.squeeze(2)
 
 
 class ABCDDataModule(LightningDataModule):

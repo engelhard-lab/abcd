@@ -117,5 +117,5 @@ class Config(BaseModel):
     def __init__(self, **data):
         super().__init__(**data)
         self.filepaths.checkpoints = self.filepaths.checkpoints.with_stem(
-            self.filepaths.checkpoints.stem + self.target
+            self.filepaths.checkpoints.stem + "_" + self.target
         )

@@ -1,4 +1,5 @@
-from torch import nn, Tensor
+from pathlib import Path
+from torch import nn
 from torch.optim import SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision.ops import MLP
@@ -16,6 +17,7 @@ from torchmetrics.functional import (
     average_precision,
 )
 from abcd.config import Config, Targets, Tasks
+from abcd.utils import get_best_checkpoint
 
 
 class RNN(nn.Module):
@@ -56,47 +58,53 @@ class Network(LightningModule):
         self.task: Tasks = task
         # self.save_hyperparameters(ignore=["model"])
 
+    def regression_metrics(self, outputs, labels) -> dict:
+        r2 = r2_score(outputs, labels, multioutput="raw_values").nanmean()
+        return {"r2": r2}
+
+    def classification_metrics(self, outputs, labels) -> dict:
+        auroc_score = auroc(
+            outputs, labels.long(), task="multiclass", num_classes=outputs.shape[-1]
+        )
+        ap_score = average_precision(
+            outputs, labels.long(), task="multiclass", num_classes=outputs.shape[-1]
+        )
+        return {"auroc": auroc_score, "ap": ap_score}
+
+    def log_metrics(self, step, loss, outputs, labels) -> None:
+        metrics = {f"{step}_loss": loss}
+        if step != "train":
+            match self.task:
+                case "classification":
+                    metrics.update(self.classification_metrics(outputs, labels))
+                case "regression":
+                    metrics.update(self.regression_metrics(outputs, labels))
+                case _:
+                    raise ValueError(
+                        f"Invalid task '{self.task}'. Choose from: 'classification' or 'regression'"
+                    )
+        self.log_dict(metrics, prog_bar=True)
+
     def forward(self, inputs):
         return self.model(inputs)
 
-    def step(self, batch: tuple[Tensor, Tensor]):
+    def step(self, step: str, batch):
         inputs, labels = batch
         outputs = self(inputs)
-        mask = ~labels.isnan()
-        labels = labels[mask]  # TODO .unsqueeze(1)
-        outputs = outputs[mask]
-        return outputs, labels
-
-    def regression_metrics(self, outputs, labels) -> dict:
         loss = self.criterion(outputs, labels)
-        r2 = r2_score(outputs, labels, multioutput="raw_values").nanmean()
-        return {"loss": loss, "r2": r2}
-
-    def classification_metrics(self, outputs, labels) -> dict:
-        loss = self.criterion(outputs, labels)
-        auroc_score = auroc(outputs, labels, task=self.target)
-        ap = average_precision(outputs, labels, task=self.target)
-        return {"loss": loss, "auroc": auroc_score, "ap": ap}
+        mask = ~loss.isnan()
+        loss = loss[mask].mean()
+        self.log_metrics(step, loss, outputs, labels)
+        return loss
 
     def training_step(self, batch, batch_idx):
-        outputs, labels = self.step(batch)
-        loss = self.criterion(outputs, labels)
-        self.log("train_loss", loss, prog_bar=True)
-        return loss
+        return self.step("train", batch)
 
     def validation_step(self, batch, batch_idx):
-        outputs, labels = self.step(batch)
-        loss = self.criterion(outputs, labels)
-        self.log("val_loss", loss, prog_bar=True)
-        return loss
+        return self.step("val", batch)
 
     def test_step(self, batch, batch_idx):
-        outputs, labels = self.step(batch)
-        if self.task == "regression":
-            metrics = self.regression_metrics(outputs, labels)
-        elif self.task == "classification":
-            metrics = self.classification_metrics(outputs, labels)
-        self.log_dict(metrics)
+        self.step("test", batch)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         inputs, labels = batch
@@ -149,7 +157,7 @@ def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
 def make_criterion(task: str):
     match task:
         case "classification":
-            return nn.CrossEntropyLoss()
+            return nn.CrossEntropyLoss(reduction="none")
         case "regression":
             return nn.MSELoss()
         case _:
@@ -158,7 +166,7 @@ def make_criterion(task: str):
             )
 
 
-def make_model(
+def make_architecture(
     method: str,
     input_dim: int,
     hidden_dim: int,
@@ -186,7 +194,7 @@ def make_model(
             raise ValueError(f"Invalid method '{method}'. Choose from: 'rnn' or 'mlp'")
 
 
-def make_network(
+def make_model(
     method: str,
     task: Tasks,
     target: Targets,
@@ -199,8 +207,9 @@ def make_network(
     weight_decay: float,
     momentum: float,
     nesterov: bool,
+    checkpoints: Path | None = None,
 ):
-    model = make_model(
+    model = make_architecture(
         method=method,
         input_dim=input_dim,
         hidden_dim=hidden_dim,
@@ -217,6 +226,17 @@ def make_network(
         nesterov=nesterov,
     )
     scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=2)
+    if checkpoints:
+        best_model_path = get_best_checkpoint(ckpt_folder=checkpoints, mode="min")
+        return Network.load_from_checkpoint(
+            checkpoint_path=best_model_path,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            criterion=criterion,
+            task=task,
+            target=target,
+        )
     return Network(
         model=model,
         criterion=criterion,
