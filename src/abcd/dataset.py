@@ -4,25 +4,20 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 
-def make_tensor_dataset(dataset, targets: str | list[str]):
+def make_tensor_dataset(dataset, target: str | list[str]):
     data = []
-    for _, subject in dataset.groupby("src_subject_id"):
-        match targets:
-            case str():
-                labels = subject.pop(targets)
-            case list():
-                labels = subject[targets]
-                subject = subject.drop(labels, axis=1)
+    for _, subject in dataset.groupby("src_subject_id", sort=False):
+        label = subject.pop(target)
+        label = tensor(label.to_numpy()).float()
         subject.pop("src_subject_id")
         features = tensor(subject.to_numpy()).float()
-        label = tensor(labels.to_numpy()).float()
         data.append((features, label))
     return data
 
 
 class RNNDataset(Dataset):
-    def __init__(self, dataset, targets: str) -> None:
-        self.dataset = make_tensor_dataset(dataset, targets)
+    def __init__(self, dataset, target: str) -> None:
+        self.dataset = make_tensor_dataset(dataset, target)
 
     def __len__(self):
         return len(self.dataset)
@@ -36,17 +31,17 @@ def collate(batch):
     sequence, label = zip(*batch)
     sequence = pad_sequence(sequence, batch_first=True)
     label = pad_sequence(label, batch_first=True, padding_value=float("nan"))
-    return sequence, label.squeeze(2)
+    return sequence, label.unsqueeze(-1)
 
 
 class ABCDDataModule(LightningDataModule):
     def __init__(
-        self, train, val, test, batch_size, dataset_class, num_workers, targets
+        self, train, val, test, batch_size, dataset_class, num_workers, target
     ) -> None:
         super().__init__()
-        self.train_dataset = dataset_class(dataset=train, targets=targets)
-        self.val_dataset = dataset_class(dataset=val, targets=targets)
-        self.test_dataset = dataset_class(dataset=test, targets=targets)
+        self.train_dataset = dataset_class(dataset=train, target=target)
+        self.val_dataset = dataset_class(dataset=val, target=target)
+        self.test_dataset = dataset_class(dataset=test, target=target)
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.collate_fn = collate if dataset_class == RNNDataset else None

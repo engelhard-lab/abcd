@@ -1,16 +1,11 @@
-from typing import Literal
 from pydantic import BaseModel
 from pathlib import Path
-
-Targets = Literal["binary", "multilabel", "multiclass"]
-Tasks = Literal["classification", "regression"]
 
 
 class Filepaths(BaseModel):
     data: Path
     features: Path
     labels: Path
-    cbcl_labels: Path
     checkpoints: Path
     logs: Path
     train: Path
@@ -21,7 +16,6 @@ class Filepaths(BaseModel):
         super().__init__(**data)
         self.features = self.data / self.features
         self.labels = self.data / self.labels
-        self.cbcl_labels = self.data / self.cbcl_labels
         self.checkpoints = self.data / self.checkpoints
         self.logs = self.data / self.logs
         self.train = self.data / self.train
@@ -103,8 +97,7 @@ class Config(BaseModel):
     n_trials: int
     method: str
     join_on: list[str]
-    target: Targets
-    task: Tasks
+    target: str
     n_quantiles: int
     filepaths: Filepaths
     labels: Labels
@@ -113,9 +106,3 @@ class Config(BaseModel):
     logging: Logging
     optimizer: Optimizer
     model: Model
-
-    def __init__(self, **data):
-        super().__init__(**data)
-        self.filepaths.checkpoints = self.filepaths.checkpoints.with_stem(
-            self.filepaths.checkpoints.stem + "_" + self.target
-        )

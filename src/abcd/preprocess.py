@@ -1,15 +1,15 @@
 from collections import defaultdict
 from typing import Callable
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
+from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import FactorAnalysis
 import polars as pl
 from polars.type_aliases import JoinStrategy
 import polars.selectors as cs
 import pandas as pd
 
-from pathlib import Path
 from functools import reduce
 
 from abcd.config import Config
@@ -123,61 +123,43 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
-def make_labels(
-    filepath: Path,
-    columns: list[str],
-    config: Config,
-) -> pl.DataFrame:
-    df = (
-        pl.read_csv(filepath, columns=columns + config.join_on)
-        .sort(config.join_on)
-        # .with_columns(pl.col(columns).shift(-1).over("src_subject_id"))
-        .with_columns(pl.col(columns).diff(n=1).over("src_subject_id"))
-        .drop_nulls()
+def make_labels(config: Config) -> pl.DataFrame:
+    targets = ["abcl_scr_prob_internal_r", "abcl_scr_prob_external_r"]
+    df = pl.read_csv(
+        "data/labels/mh_p_cbcl.csv", columns=targets + config.join_on
+    ).sort(config.join_on)  # [config.target]
+    pipeline = make_pipeline(
+        StandardScaler(),
+        FactorAnalysis(n_components=1, random_state=config.random_seed),
     )
-    if config.task == "classification":
-        bin_labels = [str(i) for i in range(config.n_quantiles)]
-        df = df.with_columns(
-            pl.col(columns)
-            .qcut(
-                quantiles=config.n_quantiles, labels=bin_labels, allow_duplicates=True
-            )
-            .cast(pl.Int32)
+    p_factors = pl.Series(pipeline.fit_transform(df.select(targets).to_numpy()))
+    # bin_labels = [str(i) for i in range(config.n_quantiles)]
+    return (
+        df.with_columns(p_factor=p_factors)
+        .with_columns(
+            pl.col(config.target)
+            # .qcut(
+            #     quantiles=config.n_quantiles,
+            #     labels=bin_labels,
+            #     allow_duplicates=True,
+            # )
+            .shift(-1)
+            .over("src_subject_id")
+            # .cast(pl.Int32)
         )
-    return df
-
-
-def get_labels(columns: list[str], config: Config):
-    match config.target:
-        case "binary":
-            filepath = config.filepaths.labels
-        case "multioutput":
-            filepath = config.filepaths.cbcl_labels
-        case _:
-            raise ValueError(
-                f"Invalid label option '{config.target}'. Choose from: 'binary' or 'multioutput'"
-            )
-    return make_labels(
-        filepath=filepath,
-        columns=columns,
-        config=config,
+        .drop_nulls()
     )
 
 
 def make_dataset(dfs: list[pl.DataFrame], config: Config):
     features = join_dataframes(dfs=dfs, join_on=config.join_on, how="outer_coalesce")
     features.write_csv("data/analytic/features.csv")
-    if config.target == "binary":
-        columns = [config.labels.p_factor]
-    elif config.target == "multioutput":
-        columns = config.labels.cbcl_labels
-    labels = get_labels(columns, config=config)
+    labels = make_labels(config=config)
     df = (
         labels.join(other=features, on=config.join_on, how="inner")
         .with_columns(pl.col("eventname").replace(EVENT_MAPPING))
         .sort(config.join_on)
     )
-    print(df)
     df.write_csv("data/analytic/dataset.csv")
     return df.partition_by("src_subject_id", include_key=True)
 
@@ -193,19 +175,9 @@ def make_splits(df, config: Config):
     X_val = pl.concat(X_val).to_pandas()
     X_test = pl.concat(X_test).to_pandas()
     X_test.to_csv("data/test_untransformed.csv", index=False)
-    match config.target:
-        case "binary":
-            y_train = X_train.pop("p_factor")
-            y_val = X_val.pop("p_factor")
-            y_test = X_test.pop("p_factor")
-        case "multioutput":
-            scaler = StandardScaler()
-            y_train = scaler.fit_transform(X_train[config.labels.cbcl_labels])
-            y_val = scaler.transform(X_val[config.labels.cbcl_labels])
-            y_test = scaler.transform(X_test[config.labels.cbcl_labels])
-            X_train = X_train.drop(config.labels.cbcl_labels, axis=1)
-            X_val = X_val.drop(config.labels.cbcl_labels, axis=1)
-            X_test = X_test.drop(config.labels.cbcl_labels, axis=1)
+    y_train = X_train.pop("p_factor")
+    y_val = X_val.pop("p_factor")
+    y_test = X_test.pop("p_factor")
     group_train = X_train.pop("src_subject_id")
     group_val = X_val.pop("src_subject_id")
     group_test = X_test.pop("src_subject_id")
@@ -234,10 +206,10 @@ def generate_data(config: Config):
     return train, val, test
 
 
-def get_data(config: Config, regenerate: bool):
+def get_data(config: Config):
     paths = [config.filepaths.train, config.filepaths.val, config.filepaths.test]
     not_all_files_exist = not all([filepath.exists() for filepath in paths])
-    if not_all_files_exist or regenerate:
+    if not_all_files_exist or config.regenerate:
         return generate_data(config=config)
     else:
         train = pd.read_csv(config.filepaths.train)

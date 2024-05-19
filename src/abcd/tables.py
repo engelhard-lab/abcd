@@ -85,7 +85,6 @@ def make_analysis_demographics():
         pl.col("eventname").replace(EVENT_MAPPING_1),
     )
     df = df.join(race, on=["src_subject_id", "eventname"], how="inner")
-    print(df)
     df.write_csv("data/demographics.csv")
 
 

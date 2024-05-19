@@ -1,36 +1,32 @@
 fast_dev_run = false
 random_seed = 42
 regenerate = false
-tune = true
+tune = false
 refit = false
-evaluate = false
-plot = false
+evaluate = true
+plot = true
 tables = false
 verbose = false
 train_size = 0.8
-n_trials = 64
+n_trials = 16
 join_on = ["src_subject_id", "eventname"]
+target = "p_factor"
 # choose from: "rnn" or "mlp"
 method = "rnn"
-# choose from: "binary" or "multioutput"
-target = "binary"
-# choose from: "classification" or "regression"
-task = "classification"
 n_quantiles = 4
 
 [filepaths]
 data = "data/"
 features = "features/"
 labels = "labels/p_factors.csv"
-cbcl_labels = "labels/mh_p_cbcl.csv"
-checkpoints = "checkpoints"
+checkpoints = "checkpoints_sk"
 logs = "lightning_logs"
 train = "analytic/train.csv"
 val = "analytic/val.csv"
 test = "analytic/test.csv"
 
 [training]
-batch_size = 1024
+batch_size = 512
 max_epochs = 200
 gradient_clip = 1.0
 
@@ -53,7 +49,7 @@ low = 0.0
 high = 0.75
 [model.num_layers]
 low = 1
-high = 4
+high = 5
 
 [logging]
 checkpoint_every_n_steps = 1

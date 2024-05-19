@@ -60,7 +60,7 @@ def captialize(column: str) -> pl.Expr:
 def format_questions() -> pl.Expr:
     return (
         pl.col("question")
-        .str.replace("\\..*|/.*|\\?.*", "")
+        .str.replace("\\..*|(!s)/(!g).*|\\?.*", "")
         .str.to_lowercase()
         .str.slice(0)
     )

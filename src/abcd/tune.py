@@ -33,11 +33,10 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int):
                 low=config.optimizer.weight_decay["low"],
                 high=config.optimizer.weight_decay["high"],
             ),
+            "method": trial.suggest_categorical("method", ["rnn", "mlp"]),
         }
         model = make_model(
-            method=config.method,
-            target=config.target,
-            task=config.task,
+            # method=config.method,
             input_dim=input_dim,
             output_dim=output_dim,
             momentum=config.optimizer.momentum,
