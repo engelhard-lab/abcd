@@ -1,9 +1,11 @@
+from matplotlib import style
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
 import polars.selectors as cs
 import pandas as pd
 import seaborn as sns
+import seaborn.objects as so
 
 # from shap import summary_plot
 from matplotlib.patches import Patch
@@ -13,57 +15,6 @@ from abcd.config import Config
 
 
 FORMAT = "png"
-
-
-def predicted_vs_observed_plot():
-    df = pl.read_csv("data/results/predicted_vs_observed.csv")
-    df = df.rename(
-        {
-            "eventname": "Year",
-            "race_ethnicity": "Race/Ethnicity",
-            "demo_sex_v2_1": "Sex",
-            "interview_age": "Age",
-        }
-    )
-    df = (
-        df.melt(
-            id_vars=["y_pred", "y_true"],
-            value_vars=["Year", "Race/Ethnicity", "Sex", "Age"],
-        )
-        .rename({"value": "Group", "variable": "Variable"})
-        .with_columns(pl.col("Group").replace("9", " 9"))
-        .sort("Group")
-        .drop_nulls()
-    )
-    min_val = df.select(pl.min_horizontal(["y_true", "y_pred"]).min()).item()
-    max_val = df.select(pl.max_horizontal(["y_true", "y_pred"]).max()).item()
-    df = df.to_pandas()
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10), sharex=True, sharey=True)
-    groups = df.groupby("Variable")
-    palette = sns.color_palette("deep")
-    for j, (ax, (name, group)) in enumerate(zip(axes.flat, groups)):
-        labels = group["Group"].unique().tolist()
-        for i, hue_category in enumerate(labels):
-            hue_subset = group[group["Group"] == hue_category]
-            sns.barplot(x="Group", y="R2", data=hue_subset, color=palette[i], ax=ax)
-        handles = [Patch(facecolor=palette[i]) for i in range(len(labels))]
-        ax.legend(
-            handles=handles,
-            labels=labels,
-            title=name,
-            loc="upper left",
-        )
-        if j in (0, 2):
-            ax.set_ylabel("Predicted")
-        if j in (2, 3):
-            ax.set_xlabel("Observed")
-        if j in (1, 3):
-            ax.set_ylabel("")
-        if j in (0, 1):
-            ax.set_xlabel("")
-        ax.plot([min_val, max_val], [min_val, max_val], color="black", linestyle="--")
-    plt.tight_layout()
-    plt.savefig(f"data/plots/predicted_vs_observed.{FORMAT}", format=FORMAT)
 
 
 def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = None):
@@ -128,16 +79,20 @@ def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = N
     plt.savefig(f"data/plots/shap_coefs{postfix}.{FORMAT}", format=FORMAT)
 
 
-def format_shap_df(shap_values: pl.DataFrame, column_mapping):
-    df = shap_values.transpose(include_header=True, header_name="variable")
+def format_shap_df(df: pl.DataFrame, column_mapping, sex=None):
+    sex = df.drop_in_place("Sex")[0]
     df = (
-        df.with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
+        df.transpose(include_header=True, header_name="variable")
+        .with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
         .group_by("dataset")
         .sum()
         .drop("variable")
     )
     columns = df.drop_in_place("dataset")
-    return df.transpose(column_names=columns).melt().with_columns(pl.col("value").abs())
+    df = df.transpose(column_names=columns).melt().with_columns(pl.col("value").abs())
+    if sex:
+        df = df.with_columns(pl.lit(sex).alias("Sex"))
+    return df
 
 
 def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
@@ -145,7 +100,7 @@ def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
     shap_values = format_shap_df(shap_values, column_mapping)
     order = (
         shap_values.group_by("variable")
-        .mean()
+        .sum()
         .sort("value", descending=True)["variable"]
         .to_list()
     )
@@ -156,8 +111,8 @@ def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
         # hue="sex",
         linestyles="none",
         order=order,
-        errorbar=("ci", 2),
-        estimator="median",
+        errorbar=("se", 2),
+        # estimator="median",
     )
     g.set(ylabel="Feature group", xlabel="Absolute summed SHAP values")
     g.yaxis.grid(True)
@@ -168,31 +123,28 @@ def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
 
 def sex_shap_plot(df: pl.DataFrame, column_mapping, subset=None):
     plt.figure(figsize=(10, 8))
-    males = df.filter(pl.col("Sex").eq("Male")).drop("Sex")
-    females = df.filter(pl.col("Sex").eq("Female")).drop("Sex")
-    males = format_shap_df(males, column_mapping).with_columns(
-        pl.lit("Male").alias("Sex")
-    )
-    females = format_shap_df(females, column_mapping).with_columns(
-        pl.lit("Female").alias("Sex")
-    )
-    df = pl.concat([males, females])
-    order = (
-        df.group_by("variable", "Sex")
-        .agg(pl.col("value").sum().abs())
-        .group_by("variable")
-        .agg(pl.col("value").diff(null_behavior="drop").abs())
-        .explode("value")
-        .sort("value", descending=True)["variable"]
-        .to_list()
-    )
+    df = pl.read_csv("data/results/sex_shap_coefs.csv")
+    df = df.group_by(
+        "Sex",
+    ).map_groups(lambda df: format_shap_df(df, column_mapping))
+    # order = (
+    #     df.group_by("variable", "Sex")
+    #     .agg(pl.col("value").sum().abs())
+    #     .group_by("variable")
+    #     .agg(pl.col("value").diff(null_behavior="drop").abs().mean())
+    # .explode("value")
+    # .sort("value", descending=True)
+    # ["variable"]
+    # .to_list()
+    # )
+    # print(order)
     g = sns.pointplot(
         data=df.to_pandas(),
         x="value",
         y="variable",
         hue="Sex",
         linestyles="none",
-        order=order,
+        # order=order,
     )
     g.set(ylabel="Feature group", xlabel="Absolute summed SHAP values")
     g.yaxis.grid(True)
@@ -237,26 +189,6 @@ def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
     plt.savefig(f"data/plots/shap_clustermap.{FORMAT}", format=FORMAT)
 
 
-def r2_plot():
-    column_mapping = {
-        "cbcl_scr_syn_anxdep_t": "Anxiety/Depression",
-        "cbcl_scr_syn_withdep_t": "Withdrawn/Depressed",
-        "cbcl_scr_syn_somatic_t": "Somatic Problems",
-        "cbcl_scr_syn_social_t": "Social Problems",
-        "cbcl_scr_syn_thought_t": "Thought Problems",
-        "cbcl_scr_syn_attention_t": "Attention Problems",
-        "cbcl_scr_syn_rulebreak_t": "Rule-Breaking Behavior",
-        "cbcl_scr_syn_aggressive_t": "Aggressive Behavior",
-    }
-    df = pl.read_csv("data/results/r2_cbcl.csv")
-    df = df.rename({"variable": "Label", "value": "R$^2$"}).with_columns(
-        pl.col("Label").replace(column_mapping)
-    )
-    sns.barplot(data=df.to_pandas(), x="R$^2$", y="Label", errorbar=("sd", 2))
-    plt.tight_layout()
-    plt.show()
-
-
 def format_shap_values(shap_values_list, X, sex):
     shap_values = np.mean(shap_values_list, axis=-1)
     shap_values = shap_values.reshape(-1, shap_values.shape[2])
@@ -265,42 +197,89 @@ def format_shap_values(shap_values_list, X, sex):
     )
 
 
-def plot(config: Config, dataloader):
+def auc_subsets():
+    plt.figure(figsize=(10, 8))
+    df = pl.read_csv("data/results/roc_pr.csv")
+    df = df.melt(id_vars="subset")
+    print(df)
+    g = sns.barplot(
+        data=df.to_pandas(),
+        x="variable",
+        y="value",
+        hue="subset",
+        errorbar=("sd", 2),
+    )
+    g.set(ylabel="AUROC", xlabel="p-factor quartile at $t+1$")
+    g.legend(title="Subset at $t$")
+    plt.tight_layout()
+    plt.show()
+
+
+def metric_curves():
+    df = pl.read_csv("data/results/roc_pr.csv")
+    p = sns.relplot(
+        data=df,
+        x="x",
+        y="y",
+        hue="p-factor quartile$_{t+1}$",
+        style="p-factor quartile$_t$",
+        col="metric",
+        # row="group",
+        kind="line",
+        errorbar=None,
+        palette="deep",
+        facet_kws={"sharey": False, "sharex": False, "legend_out": True},
+    )
+    for i, ax in enumerate(p.axes.flat):
+        if i in {0, 2}:
+            ax.plot([0, 1], [0, 1], linestyle="-.", color="black")
+            ax.set_ylabel("True positive rate")
+            ax.set_xlabel("False positive rate")
+        else:
+            ax.axhline(0.25, linestyle="-.", color="black")
+            ax.set_ylabel("Precision")
+            ax.set_xlabel("Recall")
+    p.set_titles("")
+    plt.subplots_adjust(hspace=0.25, wspace=0.25)
+    plt.show()
+
+
+def plot(dataloader):
     sns.set_theme(style="darkgrid", palette="deep")
     sns.set_context("paper", font_scale=1.75)
-    # r2_plot()
-    # predicted_vs_observed_plot()
-    # names = [data["name"] for data in config.features.model_dump().values()]
-    feature_names = (
-        pl.read_csv("data/analytic/test.csv", n_rows=1)
-        .drop(["src_subject_id", "p_factor"])
-        .columns
-    )
-    test_dataloader = iter(dataloader)
-    X, _ = next(test_dataloader)
-    X = pd.DataFrame(X.mean(dim=1), columns=feature_names)  # .view(-1, X.shape[2])
 
-    metadata = pl.read_csv("data/variables.csv")
-    shap_coefs = pl.read_csv("data/results/shap_coefs.csv")
+    metric_curves()
+    # feature_names = (
+    #     pl.read_csv("data/analytic/test.csv", n_rows=1)
+    #     .drop(["src_subject_id", "p_factor"])
+    #     .columns
+    # )
+    # test_dataloader = iter(dataloader)
+    # X, _ = next(test_dataloader)
+    # X = pd.DataFrame(X.mean(dim=1), columns=feature_names)  # .view(-1, X.shape[2])
 
-    shap_plot(shap_coefs=shap_coefs, metadata=metadata, textwrap_width=75)
-    shap_plot(
-        shap_coefs=shap_coefs,
-        metadata=metadata,
-        subset=["DTIFA Youth", "RSFMRI Youth", "FMRI Task Youth"],
-        textwrap_width=50,
-    )
+    # metadata = pl.read_csv("data/variables.csv")
+    # shap_coefs = pl.read_csv("data/results/shap_coefs.csv")
 
-    column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
-    shap_values = pl.read_csv("data/results/shap_values.csv")
+    # shap_plot(shap_coefs=shap_coefs, metadata=metadata, textwrap_width=75)
+    # shap_plot(
+    #     shap_coefs=shap_coefs,
+    #     metadata=metadata,
+    #     subset=["DTIFA Youth", "RSFMRI Youth", "FMRI Task Youth"],
+    #     textwrap_width=50,
+    # )
+
+    # column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
+    # shap_values = pl.read_csv("data/results/shap_values.csv")
     # male_shap_values = format_shap_values(shap_values_list, X, sex="Male")
     # shap_values_list = torch_load("data/results/shap_values_female.pt")
     # female_shap_values = format_shap_values(shap_values_list, X, sex="Female")
     # shap_values = pl.concat([male_shap_values, female_shap_values])
 
-    grouped_shap_plot(shap_values=shap_values, column_mapping=column_mapping)
+    # grouped_shap_plot(shap_values=shap_values, column_mapping=column_mapping)
     # sex_shap_plot(df=shap_values, column_mapping=column_mapping)
 
+    # names = [data["name"] for data in config.features.model_dump().values()]
     # color_mapping = dict(zip(names, sns.color_palette("tab20")))
     # shap_clustermap(
     #     shap_values=shap_values,
@@ -308,3 +287,9 @@ def plot(config: Config, dataloader):
     #     column_mapping=column_mapping,
     #     color_mapping=color_mapping,
     # )
+
+
+if __name__ == "__main__":
+    plot(dataloader=None)
+    # auc_subsets()
+    # roc_curves()

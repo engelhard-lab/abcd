@@ -1,33 +1,23 @@
 from functools import partial
-from shap import GradientExplainer
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
 import polars as pl
 from tqdm import tqdm
-import pandas as pd
-import numpy as np
-from captum.attr import GradientShap, IntegratedGradients
+from captum.attr import GradientShap
 
 
 def predict(x, model):
     output = model(x)
-    return output.sum(dim=1)  # [:, -1]
+    return output.sum(dim=1)[:, -1]
 
 
 def make_shap_values(model, X, background, columns):
     f = partial(predict, model=model.to("mps:0"))
     explainer = GradientShap(f)
-    shap_values = explainer.attribute(
-        X.to("mps:0"),
-        background.to("mps:0"),
-        # target=labels.squeeze(-1).to("mps:0"),  # .long().flatten(0, 1)
-    ).sum(dim=1)
-    # explainer = GradientExplainer(model.to("mps:0"), background.to("mps:0"))
-    # shap_values = explainer.shap_values(X.to("mps:0"))
-    # shap_values = np.sum(shap_values, axis=(1, 3))  # [:, :, -1]
-    return pl.DataFrame(shap_values.cpu().numpy(), schema=columns)
+    shap_values = explainer.attribute(X.to("mps:0"), background.to("mps:0"))
+    return pl.DataFrame(shap_values.flatten(0, 1).cpu().numpy(), schema=columns)
 
 
 def regress_shap_values(shap_values, X):
@@ -44,4 +34,4 @@ def regress_shap_values(shap_values, X):
             )
             coefs[col].append(coef)
     df = pl.DataFrame(coefs).melt()
-    df.write_csv("data/results/shap_coefs.csv")
+    return df

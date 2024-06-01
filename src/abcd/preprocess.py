@@ -1,16 +1,17 @@
 from collections import defaultdict
 from typing import Callable
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.pipeline import make_pipeline
 from sklearn.impute import KNNImputer
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import FactorAnalysis
 import polars as pl
 from polars.type_aliases import JoinStrategy
 import polars.selectors as cs
-import pandas as pd
+# import pandas as pd
 
 from functools import reduce
+
 
 from abcd.config import Config
 from abcd.metadata import make_variable_metadata
@@ -114,6 +115,7 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         transform = transforms[filename]
         df = (
             df.select(columns)
+            .filter(pl.col("eventname").is_in(EVENT_MAPPING.keys()))
             .select(~cs.contains(columns_to_drop))
             .with_columns(pl.all().replace({777: None, 999: None}))
             .pipe(transform)
@@ -124,36 +126,44 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
 
 
 def make_labels(config: Config) -> pl.DataFrame:
-    targets = ["abcl_scr_prob_internal_r", "abcl_scr_prob_external_r"]
     df = pl.read_csv(
-        "data/labels/mh_p_cbcl.csv", columns=targets + config.join_on
-    ).sort(config.join_on)  # [config.target]
+        "data/labels/mh_p_cbcl.csv", columns=config.labels.cbcl_labels + config.join_on
+    ).sort(config.join_on)
     pipeline = make_pipeline(
-        StandardScaler(),
-        FactorAnalysis(n_components=1, random_state=config.random_seed),
+        KNNImputer(n_neighbors=5),
+        FactorAnalysis(
+            n_components=1,
+            random_state=config.random_seed,
+        ),
     )
-    p_factors = pl.Series(pipeline.fit_transform(df.select(targets).to_numpy()))
-    # bin_labels = [str(i) for i in range(config.n_quantiles)]
-    return (
+    values = df.select(config.labels.cbcl_labels).to_numpy()
+    values = pipeline.fit_transform(values)
+    p_factors = pl.Series(values)
+    bin_labels = [str(i) for i in range(config.n_quantiles)]
+    df = (
         df.with_columns(p_factor=p_factors)
         .with_columns(
-            pl.col(config.target)
-            # .qcut(
-            #     quantiles=config.n_quantiles,
-            #     labels=bin_labels,
-            #     allow_duplicates=True,
-            # )
+            pl.col("p_factor").qcut(
+                quantiles=config.n_quantiles,
+                labels=bin_labels,
+                allow_duplicates=True,
+            )
+        )
+        .with_columns(
+            pl.col("p_factor")
             .shift(-1)
             .over("src_subject_id")
-            # .cast(pl.Int32)
+            .cast(pl.Int32)
+            .alias("next_p_factor")
         )
         .drop_nulls()
+        .select(pl.exclude(config.labels.cbcl_labels))
     )
+    return df
 
 
 def make_dataset(dfs: list[pl.DataFrame], config: Config):
     features = join_dataframes(dfs=dfs, join_on=config.join_on, how="outer_coalesce")
-    features.write_csv("data/analytic/features.csv")
     labels = make_labels(config=config)
     df = (
         labels.join(other=features, on=config.join_on, how="inner")
@@ -161,37 +171,44 @@ def make_dataset(dfs: list[pl.DataFrame], config: Config):
         .sort(config.join_on)
     )
     df.write_csv("data/analytic/dataset.csv")
-    return df.partition_by("src_subject_id", include_key=True)
+    return df.partition_by("src_subject_id", maintain_order=True)
 
 
-def make_splits(df, config: Config):
+def make_splits(df: list[pl.DataFrame], config: Config):
     X_train, X_val_test = train_test_split(
         df, train_size=config.train_size, random_state=config.random_seed, shuffle=True
     )
     X_val, X_test = train_test_split(
-        X_val_test, train_size=0.5, random_state=config.random_seed, shuffle=True
+        X_val_test, train_size=0.5, random_state=config.random_seed, shuffle=False
     )
-    X_train = pl.concat(X_train).to_pandas()
-    X_val = pl.concat(X_val).to_pandas()
-    X_test = pl.concat(X_test).to_pandas()
-    X_test.to_csv("data/test_untransformed.csv", index=False)
-    y_train = X_train.pop("p_factor")
-    y_val = X_val.pop("p_factor")
-    y_test = X_test.pop("p_factor")
-    group_train = X_train.pop("src_subject_id")
-    group_val = X_val.pop("src_subject_id")
-    group_test = X_test.pop("src_subject_id")
-    pipeline_steps = [
-        ("scaler", StandardScaler()),
-        ("imputer", KNNImputer(n_neighbors=5)),
-    ]
-    pipeline = Pipeline(steps=pipeline_steps)
-    X_train = pipeline.fit_transform(X_train)
-    X_val = pipeline.transform(X_val)
-    X_test = pipeline.transform(X_test)
-    train = pd.concat([group_train, y_train, X_train], axis=1)  # type: ignore
-    val = pd.concat([group_val, y_val, X_val], axis=1)  # type: ignore
-    test = pd.concat([group_test, y_test, X_test], axis=1)  # type: ignore
+    X_train: pl.DataFrame = pl.concat(X_train)  # type: ignore
+    X_val: pl.DataFrame = pl.concat(X_val)  # type: ignore
+    X_test: pl.DataFrame = pl.concat(X_test)  # type: ignore
+    X_test.write_csv("data/test_untransformed.csv")
+    y_train = X_train.drop_in_place("next_p_factor")
+    y_val = X_val.drop_in_place("next_p_factor")
+    y_test = X_test.drop_in_place("next_p_factor")
+    # quartile = X_test.select("src_subject_id", "p_factor")
+    # quartile.write_csv("data/test_quartiles.csv")
+    quartile_train = X_train.drop_in_place("p_factor")
+    quartile_val = X_val.drop_in_place("p_factor")
+    quartile_test = X_test.drop_in_place("p_factor")
+    group_train = X_train.drop_in_place("src_subject_id")
+    group_val = X_val.drop_in_place("src_subject_id")
+    group_test = X_test.drop_in_place("src_subject_id")
+    pipeline = make_pipeline(StandardScaler(), KNNImputer(n_neighbors=5))
+    X_train = pipeline.fit_transform(X_train)  # type: ignore
+    X_val = pipeline.transform(X_val)  # type: ignore
+    X_test = pipeline.transform(X_test)  # type: ignore
+    train = X_train.with_columns(
+        src_subject_id=group_train, label=y_train, quartile=quartile_train
+    )
+    val = X_val.with_columns(
+        src_subject_id=group_val, label=y_val, quartile=quartile_val
+    )
+    test = X_test.with_columns(
+        src_subject_id=group_test, label=y_test, quartile=quartile_test
+    )
     return train, val, test
 
 
@@ -200,9 +217,9 @@ def generate_data(config: Config):
     make_variable_metadata(dfs=dfs, features=config.features)
     df = make_dataset(dfs, config=config)
     train, val, test = make_splits(df, config=config)
-    train.to_csv(config.filepaths.train, index=False)
-    val.to_csv(config.filepaths.val, index=False)
-    test.to_csv(config.filepaths.test, index=False)
+    train.write_csv(config.filepaths.train)
+    val.write_csv(config.filepaths.val)
+    test.write_csv(config.filepaths.test)
     return train, val, test
 
 
@@ -210,9 +227,9 @@ def get_data(config: Config):
     paths = [config.filepaths.train, config.filepaths.val, config.filepaths.test]
     not_all_files_exist = not all([filepath.exists() for filepath in paths])
     if not_all_files_exist or config.regenerate:
-        return generate_data(config=config)
+        train, val, test = generate_data(config=config)
     else:
-        train = pd.read_csv(config.filepaths.train)
-        val = pd.read_csv(config.filepaths.val)
-        test = pd.read_csv(config.filepaths.test)
-        return train, val, test
+        train = pl.read_csv(config.filepaths.train)
+        val = pl.read_csv(config.filepaths.val)
+        test = pl.read_csv(config.filepaths.test)
+    return train, val, test

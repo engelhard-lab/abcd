@@ -12,7 +12,6 @@ from lightning.pytorch.callbacks import (
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import Trainer
 from torchmetrics.functional import (
-    r2_score,
     auroc,
     average_precision,
 )
@@ -39,6 +38,46 @@ class RNN(nn.Module):
         return out
 
 
+def make_metrics(step, loss, outputs, labels) -> dict:
+    metrics = {f"{step}_loss": loss}
+    labels = labels.long()
+    if step == "val":
+        auroc_score = auroc(
+            outputs,
+            labels,
+            task="multiclass",
+            num_classes=outputs.shape[-1],
+        )
+        ap_score = average_precision(
+            outputs,
+            labels,
+            task="multiclass",
+            num_classes=outputs.shape[-1],
+            # average="none",
+        )
+        metrics.update({"auroc": auroc_score, "ap": ap_score})
+    if step == "test":
+        auroc_score = auroc(
+            outputs,
+            labels,
+            task="multiclass",
+            num_classes=outputs.shape[-1],
+            average="none",
+        )
+        for i, auc in enumerate(auroc_score):  # type: ignore
+            metrics.update({f"auroc_{i+1}": auc})
+        ap_score = average_precision(
+            outputs,
+            labels,
+            task="multiclass",
+            num_classes=outputs.shape[-1],
+            average="none",
+        )
+        for i, ap in enumerate(ap_score):  # type: ignore
+            metrics.update({f"ap_{i+1}": ap})
+    return metrics
+
+
 class Network(LightningModule):
     def __init__(
         self,
@@ -53,32 +92,19 @@ class Network(LightningModule):
         self.optimizer = optimizer
         self.scheduler = scheduler
 
-    def log_metrics(self, step, loss, outputs, labels) -> None:
-        metrics = {f"{step}_loss": loss}
-        if step != "train":
-            # labels = labels.long()
-            # auroc_score = auroc(
-            #     outputs, labels, task="multiclass", num_classes=outputs.shape[-1]
-            # )
-            # ap_score = average_precision(
-            #     outputs, labels, task="multiclass", num_classes=outputs.shape[-1]
-            # )
-            # metrics.update({"auroc": auroc_score, "ap": ap_score})
-            r2 = r2_score(outputs.squeeze(-1), labels.squeeze(-1))
-            metrics.update({"r2": r2})
-        self.log_dict(metrics, prog_bar=True)
-
     def forward(self, inputs):
         return self.model(inputs)
 
     def step(self, step: str, batch):
-        inputs, labels = batch
+        inputs, labels, _ = batch
         outputs = self(inputs)
-        mask = ~labels.isnan()
-        outputs = outputs[mask]
-        labels = labels[mask]
-        loss = self.criterion(outputs, labels)  # .nanmean()
-        self.log_metrics(step, loss, outputs, labels)
+        # mask = ~labels.isnan()
+        # outputs = outputs[mask]
+        # labels = labels[mask]
+        labels = labels.squeeze(-1)
+        loss = self.criterion(outputs, labels).nanmean()
+        metrics = make_metrics(step, loss, outputs, labels)
+        self.log_dict(metrics, prog_bar=True)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -91,9 +117,9 @@ class Network(LightningModule):
         self.step("test", batch)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        inputs, labels = batch
+        inputs, labels, quartiles = batch
         outputs = self(inputs)
-        return outputs, labels
+        return outputs, labels, quartiles
 
     def configure_optimizers(self):
         scheduler_config = {
@@ -187,7 +213,7 @@ def make_model(
         num_layers=num_layers,
         dropout=dropout,
     )
-    criterion = nn.MSELoss()  # nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(reduction="none")  # nn.MSELoss()
     optimizer = SGD(
         model.parameters(),
         lr=lr,
