@@ -1,23 +1,17 @@
 from multiprocessing import cpu_count
-from operator import not_
 from typing import Callable
-from shap import GradientExplainer
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.utils import resample
 import torch
-import torch.nn.functional as F
 import polars as pl
-from tqdm import tqdm
+from torchmetrics.classification import (
+    MulticlassAUROC,
+    MulticlassAccuracy,
+    MulticlassAveragePrecision,
+)
+from torchmetrics.wrappers import BootStrapper
 from torchmetrics.functional import (
-    auroc,
-    average_precision,
     roc,
     precision_recall_curve,
 )
-import pandas as pd
-import numpy as np
 
 from abcd.config import Config
 from abcd.dataset import ABCDDataModule, RNNDataset
@@ -65,25 +59,6 @@ def make_metadata():
     ).fill_null("Unknown")
 
 
-def auc_bootstrap(outputs, labels):
-    aucs = []
-    n_bootstraps = 1000
-    for _ in tqdm(range(n_bootstraps)):
-        outputs_resampled: torch.Tensor
-        labels_resampled: torch.Tensor
-        outputs_resampled, labels_resampled = resample(outputs, labels)  # type: ignore
-        auc = auroc(
-            outputs_resampled,
-            labels_resampled,
-            task="multiclass",
-            num_classes=outputs.shape[-1],
-            average="none",
-        )  # type: ignore
-        auc = {f"Q{i+1}": value.item() for i, value in enumerate(auc)}  # type: ignore
-        aucs.append(auc)
-    return pl.DataFrame(aucs)
-
-
 def make_predictions(config: Config, model):
     trainer, _ = make_trainer(config)
     train, val, test = get_data(config)
@@ -101,6 +76,45 @@ def make_predictions(config: Config, model):
     labels = torch.concat(labels).long().flatten()
     quartiles = torch.concat(quartiles).long().flatten()
     return outputs, labels, quartiles
+
+
+def bootstrap_metric(metric, outputs, labels, n_bootstraps=1000):
+    bootstrap = BootStrapper(
+        metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
+    )
+    bootstrap.update(outputs, labels)
+    bootstrapped = bootstrap.compute()["raw"]
+    columns = [f"Q{i}" for i in range(1, 5)]
+    return pl.DataFrame(bootstrapped.numpy(), schema=columns)
+
+
+def make_metrics(outputs, labels):
+    metrics = {
+        "AUROC": MulticlassAUROC(num_classes=outputs.shape[-1], average="none"),
+        "Accuracy": MulticlassAccuracy(num_classes=outputs.shape[-1], average="none"),
+        "Average Precision": MulticlassAveragePrecision(
+            num_classes=outputs.shape[-1], average="none"
+        ),
+        # MulticlassCalibrationError(num_classes=outputs.shape[-1]),
+    }
+    dfs = []
+    for name, metric in metrics.items():
+        df = bootstrap_metric(metric, outputs, labels).with_columns(
+            pl.lit(name).alias("Metric")
+        )
+        dfs.append(df)
+    return pl.concat(dfs)
+
+
+def make_metrics_subsets(predictions: dict):
+    dfs = []
+    for (q4_t, q4_tp1), (outputs, labels) in predictions.items():
+        df = make_metrics(outputs, labels).with_columns(
+            pl.lit(q4_t).alias("Quartile$_t$"),
+            pl.lit(q4_tp1).alias("Quartile$_{t+1}$"),
+        )
+        dfs.append(df)
+    return pl.concat(dfs)
 
 
 def roc_curve(outputs: torch.Tensor, labels: torch.Tensor):
@@ -124,69 +138,50 @@ def pr_curve(outputs: torch.Tensor, labels: torch.Tensor):
         {
             "y": precision_i.numpy().tolist(),
             "x": recall_i.numpy().tolist(),
-            "p-factor quartile$_{t+1}$": i,
+            "p-factor quartile$_{t+1}$": i + 1,
         }
         for i, (precision_i, recall_i) in enumerate(zip(precision, recall))
     ]
     return pl.DataFrame(data).explode(columns=["y", "x"])
 
 
-def metric_groups(
-    outputs: torch.Tensor,
-    labels: torch.Tensor,
-    quartiles: torch.Tensor,
-    metric: Callable,
-):
-    df = metric(outputs, labels).with_columns(
-        pl.lit("$\\{1, 2, 3, 4\\}$").alias("p-factor quartile$_t$"),
-        pl.lit("p-factor quartile$_{t+1} \\in \\{1, 2, 3, 4\\}$").alias("group"),
-    )
-    in_q4 = metric(outputs[quartiles == 3], labels[quartiles == 3]).with_columns(
-        pl.lit("$\\{4\\}$").alias("p-factor quartile$_t$"),
-        pl.lit("p-factor quartile$_{t+1} \\in \\{4\\}$").alias("group"),
-    )
-    not_in_q4 = metric(
-        outputs=outputs[quartiles != 3], labels=labels[quartiles != 3]
-    ).with_columns(
-        pl.lit("$\\{1, 2, 3\\}$").alias("p-factor quartile$_t$"),
-        pl.lit("p-factor quartile$_{t+1} \\in \\{4\\}$").alias("group"),
-    )
-    return (
-        pl.concat([df, in_q4, not_in_q4])
-        .filter(
-            pl.col("group").eq("p-factor quartile$_{t+1} \\in \\{1, 2, 3, 4\\}$")
-            | (
-                pl.col("group").eq("p-factor quartile$_{t+1} \\in \\{4\\}$")
-                & pl.col("p-factor quartile$_{t+1}$").eq(3)
-            )
+def make_curve_groups(predictions, metric: Callable):
+    dfs = []
+    for (q4_t, q4_tp1), (outputs, labels) in predictions.items():
+        df = metric(outputs, labels).with_columns(
+            pl.lit(q4_t).alias("Quartile$_t$"),
+            pl.lit(q4_tp1).alias("Quartile$_{t+1}$"),
         )
-        .with_columns(pl.col("p-factor quartile$_{t+1}$").add(1))
+        dfs.append(df)
+    return pl.concat(dfs).filter(
+        pl.col("p-factor quartile$_{t+1}$").eq(4)
+        | pl.col("Qartile$_t$").eq("$\\{1, 2, 3, 4\\}$")
     )
+
+
+def make_metric_curves(predictions):
+    metrics = {"ROC": roc_curve, "PR": pr_curve}
+    dfs = []
+    for name, metric in metrics.items():
+        df = make_curve_groups(predictions=predictions, metric=metric).with_columns(
+            pl.lit(name).alias("Metric")
+        )
+        dfs.append(df)
+    return pl.concat(dfs)
 
 
 def evaluate_model(config: Config, model: Network):
     outputs, labels, quartiles = make_predictions(config=config, model=model)
-    measurement = torch.arange(1, 5).repeat(
-        outputs.shape[0] // 4
-    )  # TODO make this dynamic based on number of measurements
-    (
-        pl.DataFrame(
-            {
-                "output": outputs.numpy(),
-                "quartile_tp1": labels.numpy(),
-                "quartile_t": quartiles.numpy(),
-                "measurement": measurement.numpy(),
-            }
-        )
-        .with_columns(pl.col("output").list.to_struct(fields=lambda idx: f"Q{idx+1}"))
-        .unnest("output")
-    ).write_csv("data/results/predictions.csv")
-    roc_df = metric_groups(outputs, labels, quartiles, roc_curve).with_columns(
-        pl.lit("ROC").alias("metric")
-    )
-    pr_df = metric_groups(outputs, labels, quartiles, pr_curve).with_columns(
-        pl.lit("PR").alias("metric")
-    )
-    df = pl.concat([roc_df, pr_df])
-    print(df)
-    df.write_csv("data/results/roc_pr.csv")
+    outputs_q4_t = outputs[quartiles == 3]
+    labels_q4_t = labels[quartiles == 3]
+    outputs_not_q4_t = outputs[quartiles != 3]
+    labels_not_q4_t = labels[quartiles != 3]
+    predictions = {
+        ("$\\{1, 2, 3, 4\\}$", "$\\{1, 2, 3, 4\\}$"): (outputs, labels),
+        ("$\\{4\\}$", "$\\{4\\}$"): (outputs_q4_t, labels_q4_t),
+        ("$\\{1, 2, 3\\}$", "$\\{4\\}$"): (outputs_not_q4_t, labels_not_q4_t),
+    }
+    metrics = make_metrics_subsets(predictions)
+    metrics.write_csv("data/results/metrics.csv")
+    curves = make_metric_curves(predictions)
+    curves.write_csv("data/results/curves.csv")

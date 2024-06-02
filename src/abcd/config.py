@@ -7,6 +7,7 @@ class Filepaths(BaseModel):
     features: Path
     labels: Path
     checkpoints: Path
+    study: Path
     logs: Path
     train: Path
     val: Path
@@ -17,6 +18,7 @@ class Filepaths(BaseModel):
         self.features = self.data / self.features
         self.labels = self.data / self.labels
         self.checkpoints = self.data / self.checkpoints
+        self.study = self.data / self.study
         self.logs = self.data / self.logs
         self.train = self.data / self.train
         self.val = self.data / self.val
@@ -84,6 +86,7 @@ class Features(BaseModel):
 
 class Config(BaseModel):
     fast_dev_run: bool
+    name: str
     random_seed: int
     regenerate: bool
     tune: bool
@@ -106,3 +109,7 @@ class Config(BaseModel):
     logging: Logging
     optimizer: Optimizer
     model: Model
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        self.filepaths.study = self.filepaths.study / (self.name + ".pkl")

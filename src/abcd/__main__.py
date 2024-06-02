@@ -30,16 +30,6 @@ def main():
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
     seed_everything(config.random_seed)
-    # moves_into_4th_quartile = (
-    #     (pl.col("p_factor").eq(3) & ~pl.col("p_factor").shift(1).eq(3))
-    #     .any()
-    #     .over("src_subject_id")
-    # )
-    # moves_out_of_4th_quartile = (
-    #     (pl.col("p_factor").ne(3) & pl.col("p_factor").shift(1).eq(3))
-    #     .any()
-    #     .over("src_subject_id")
-    # )
     train, val, test = get_data(config)
     data_module = ABCDDataModule(
         train=train,
@@ -59,7 +49,7 @@ def main():
             output_dim=output_dim,
         )
     else:
-        with open("data/studies/study.pkl", "rb") as f:
+        with open(config.filepaths.study, "rb") as f:
             study: Study = pickle.load(f)
     print(study.best_params)
     model = make_model(

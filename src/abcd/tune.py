@@ -36,7 +36,6 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int):
             "method": trial.suggest_categorical("method", ["rnn", "mlp"]),
         }
         model = make_model(
-            # method=config.method,
             input_dim=input_dim,
             output_dim=output_dim,
             momentum=config.optimizer.momentum,
@@ -59,7 +58,7 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int):
         study_name="ABCD",
     )
     study.optimize(func=objective, n_trials=config.n_trials)
-    with open("data/studies/study.pkl", "wb") as f:
+    with open(config.filepaths.study, "wb") as f:
         pickle.dump(study, f)
     cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
     return study

@@ -132,6 +132,11 @@ def p_factor_table():
     df.write_csv("data/results/tables/p_factors.csv")
 
 
+# TODO
+def metrics_table():
+    pass
+
+
 def apply_r2(args) -> pl.Series:
     return pl.Series([r2_score(y_true=args[0], y_pred=args[1])], dtype=pl.Float32)
 
