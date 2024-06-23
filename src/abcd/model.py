@@ -96,11 +96,8 @@ class Network(LightningModule):
         return self.model(inputs)
 
     def step(self, step: str, batch):
-        inputs, labels, _ = batch
+        inputs, labels = batch
         outputs = self(inputs)
-        # mask = ~labels.isnan()
-        # outputs = outputs[mask]
-        # labels = labels[mask]
         labels = labels.squeeze(-1)
         loss = self.criterion(outputs, labels).nanmean()
         metrics = make_metrics(step, loss, outputs, labels)
@@ -117,9 +114,9 @@ class Network(LightningModule):
         self.step("test", batch)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        inputs, labels, quartiles = batch
+        inputs, labels = batch
         outputs = self(inputs)
-        return outputs, labels, quartiles
+        return outputs, labels
 
     def configure_optimizers(self):
         scheduler_config = {
@@ -213,7 +210,7 @@ def make_model(
         num_layers=num_layers,
         dropout=dropout,
     )
-    criterion = nn.CrossEntropyLoss(reduction="none")  # nn.MSELoss()
+    criterion = nn.CrossEntropyLoss(reduction="none")
     optimizer = SGD(
         model.parameters(),
         lr=lr,
@@ -232,8 +229,5 @@ def make_model(
             criterion=criterion,
         )
     return Network(
-        model=model,
-        criterion=criterion,
-        optimizer=optimizer,
-        scheduler=scheduler,
+        model=model, criterion=criterion, optimizer=optimizer, scheduler=scheduler
     )

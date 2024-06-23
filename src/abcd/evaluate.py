@@ -1,23 +1,19 @@
-from multiprocessing import cpu_count
+from functools import partial
 from typing import Callable
 import torch
 import polars as pl
-from torchmetrics.classification import (
-    MulticlassAUROC,
-    MulticlassAccuracy,
-    MulticlassAveragePrecision,
-)
+from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision
 from torchmetrics.wrappers import BootStrapper
 from torchmetrics.functional import (
     roc,
     precision_recall_curve,
 )
+from multiprocessing import cpu_count
 
 from abcd.config import Config
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.model import Network, make_trainer
 from abcd.preprocess import get_data
-from abcd.tables import SEX_MAPPING
 
 REVERSE_EVENT_MAPPING = {
     0: "Baseline",
@@ -26,56 +22,60 @@ REVERSE_EVENT_MAPPING = {
     3: "Year 3",
     4: "Year 4",
 }
+OUTPUT_COLUMNS = ["1", "2", "3", "4"]
 
 
-def make_metadata():
-    test_subjects = (
-        pl.read_csv(
-            "data/test_untransformed.csv",
-            columns=[
-                "src_subject_id",
-                "eventname",
-                "p_factor",
-                "demo_sex_v2_1",
-                "interview_age",
-            ],
-        )
-        .with_columns(
-            pl.col("eventname").replace(REVERSE_EVENT_MAPPING),
-            pl.col("demo_sex_v2_1").replace(SEX_MAPPING),
-            (pl.col("interview_age") / 12).round(0).cast(pl.Int32),
-        )
-        .with_columns(pl.all().forward_fill().over("src_subject_id"))
-    )
-    demographics = pl.read_csv(
-        "data/demographics.csv",
-        columns=["src_subject_id", "eventname", "race_ethnicity"],
-    ).with_columns(
-        pl.col("race_ethnicity").forward_fill().over("src_subject_id"),
-        pl.col("eventname").replace(REVERSE_EVENT_MAPPING),
-    )
-    return test_subjects.join(
-        demographics, on=["src_subject_id", "eventname"], how="left"
-    ).fill_null("Unknown")
-
-
-def make_predictions(config: Config, model):
+def make_predictions(config: Config, model: Network):
     trainer, _ = make_trainer(config)
-    train, val, test = get_data(config)
+    _, _, test = get_data(config)
     data_module = ABCDDataModule(
-        train=train,
-        val=val,
+        train=_,
+        val=_,
         test=test,
         batch_size=config.training.batch_size,
         num_workers=cpu_count(),
         dataset_class=RNNDataset,
     )
     predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
-    outputs, labels, quartiles = zip(*predictions)
+    outputs, labels = zip(*predictions)
     outputs = torch.concat(outputs).permute(0, 2, 1).contiguous().flatten(0, 1)
-    labels = torch.concat(labels).long().flatten()
-    quartiles = torch.concat(quartiles).long().flatten()
-    return outputs, labels, quartiles
+    # FIXME try these instead of metadata column Next quartile
+    # labels = pl.Series(torch.concat(labels).flatten().numpy()).fill_nan(None)
+    metadata = pl.read_csv("data/test_metadata.csv")
+    outputs = pl.DataFrame(outputs.cpu().numpy(), schema=OUTPUT_COLUMNS)
+    # .with_columns(
+    #     labels.alias("Next quartile")
+    # )
+    return pl.concat([metadata, outputs], how="horizontal").drop_nulls("Next quartile")
+
+
+def get_predictions(df: pl.DataFrame):
+    outputs = torch.tensor(df.select(OUTPUT_COLUMNS).to_numpy()).float()
+    labels = torch.tensor(df["Next quartile"].to_numpy()).long()
+    return outputs, labels
+
+
+def make_curve(df: pl.DataFrame, curve: Callable, name: str):
+    outputs, labels = get_predictions(df)
+    x, y, _ = curve(outputs, labels, task="multiclass", num_classes=outputs.shape[-1])
+    if name == "PR":
+        x, y = y, x
+    return pl.concat(
+        [
+            pl.DataFrame(
+                {
+                    "Metric": name,
+                    "Curve": "Model",
+                    "Variable": df["Variable"][0],
+                    "Group": df["Group"][0],
+                    "Next quartile": label,
+                    "x": x_i.numpy(),
+                    "y": y_i.numpy(),
+                }
+            )
+            for label, x_i, y_i in zip(OUTPUT_COLUMNS, x, y)
+        ]
+    )
 
 
 def bootstrap_metric(metric, outputs, labels, n_bootstraps=1000):
@@ -83,105 +83,114 @@ def bootstrap_metric(metric, outputs, labels, n_bootstraps=1000):
         metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
     )
     bootstrap.update(outputs, labels)
-    bootstrapped = bootstrap.compute()["raw"]
-    columns = [f"Q{i}" for i in range(1, 5)]
-    return pl.DataFrame(bootstrapped.numpy(), schema=columns)
+    bootstraps = bootstrap.compute()["raw"].cpu().numpy()
+    return pl.DataFrame(bootstraps, schema=OUTPUT_COLUMNS)
 
 
-def make_metrics(outputs, labels):
-    metrics = {
-        "AUROC": MulticlassAUROC(num_classes=outputs.shape[-1], average="none"),
-        "Accuracy": MulticlassAccuracy(num_classes=outputs.shape[-1], average="none"),
-        "Average Precision": MulticlassAveragePrecision(
-            num_classes=outputs.shape[-1], average="none"
-        ),
-        # MulticlassCalibrationError(num_classes=outputs.shape[-1]),
-    }
-    dfs = []
-    for name, metric in metrics.items():
-        df = bootstrap_metric(metric, outputs, labels).with_columns(
-            pl.lit(name).alias("Metric")
+def make_metrics(df: pl.DataFrame):
+    if df.shape[0] < 10:
+        return pl.DataFrame(
+            {
+                "Metric": [],
+                "Variable": [],
+                "Group": [],
+                "Next quartile": [],
+                "value": [],
+            }
         )
-        dfs.append(df)
-    return pl.concat(dfs)
-
-
-def make_metrics_subsets(predictions: dict):
-    dfs = []
-    for (q4_t, q4_tp1), (outputs, labels) in predictions.items():
-        df = make_metrics(outputs, labels).with_columns(
-            pl.lit(q4_t).alias("Quartile$_t$"),
-            pl.lit(q4_tp1).alias("Quartile$_{t+1}$"),
-        )
-        dfs.append(df)
-    return pl.concat(dfs)
-
-
-def roc_curve(outputs: torch.Tensor, labels: torch.Tensor):
-    fpr, tpr, _ = roc(outputs, labels, task="multiclass", num_classes=outputs.shape[-1])
-    data = [
-        {
-            "y": tpr_i.numpy().tolist(),
-            "x": fpr_i.numpy().tolist(),
-            "p-factor quartile$_{t+1}$": i,
-        }
-        for i, (tpr_i, fpr_i) in enumerate(zip(tpr, fpr))
-    ]
-    return pl.DataFrame(data).explode(columns=["y", "x"])
-
-
-def pr_curve(outputs: torch.Tensor, labels: torch.Tensor):
-    precision, recall, _ = precision_recall_curve(
-        outputs, labels, task="multiclass", num_classes=outputs.shape[-1]
+    outputs, labels = get_predictions(df)
+    auroc = MulticlassAUROC(num_classes=outputs.shape[-1], average="none")
+    ap = MulticlassAveragePrecision(num_classes=outputs.shape[-1], average="none")
+    bootstrapped_auroc = bootstrap_metric(auroc, outputs, labels).with_columns(
+        pl.lit("AUROC").alias("Metric")
     )
-    data = [
-        {
-            "y": precision_i.numpy().tolist(),
-            "x": recall_i.numpy().tolist(),
-            "p-factor quartile$_{t+1}$": i + 1,
-        }
-        for i, (precision_i, recall_i) in enumerate(zip(precision, recall))
-    ]
-    return pl.DataFrame(data).explode(columns=["y", "x"])
-
-
-def make_curve_groups(predictions, metric: Callable):
-    dfs = []
-    for (q4_t, q4_tp1), (outputs, labels) in predictions.items():
-        df = metric(outputs, labels).with_columns(
-            pl.lit(q4_t).alias("Quartile$_t$"),
-            pl.lit(q4_tp1).alias("Quartile$_{t+1}$"),
+    bootstrapped_ap = bootstrap_metric(ap, outputs, labels).with_columns(
+        pl.lit("AP").alias("Metric")
+    )
+    df = (
+        pl.concat(
+            [bootstrapped_auroc, bootstrapped_ap],
+            how="diagonal_relaxed",
         )
-        dfs.append(df)
-    return pl.concat(dfs).filter(
-        pl.col("p-factor quartile$_{t+1}$").eq(4)
-        | pl.col("Qartile$_t$").eq("$\\{1, 2, 3, 4\\}$")
+        .with_columns(
+            pl.lit(df["Group"][0]).cast(pl.String).alias("Group"),
+            pl.lit(df["Variable"][0]).cast(pl.String).alias("Variable"),
+        )
+        .melt(id_vars=["Metric", "Variable", "Group"], variable_name="Next quartile")
+    )
+    return df
+
+
+def make_prevalence(df: pl.DataFrame, n: int):
+    return (
+        df.group_by(["Next quartile", "Variable", "Group"])
+        .count()
+        .with_columns(
+            pl.col("count").truediv(pl.lit(n)).alias("y"),
+            pl.col("Next quartile").add(1).cast(pl.String),
+            pl.lit("PR").alias("Metric"),
+            pl.lit("Baseline").alias("Curve"),
+            pl.lit([0, 1]).alias("x"),
+        )
+        .drop("count")
+        .drop_nulls()
     )
 
 
-def make_metric_curves(predictions):
-    metrics = {"ROC": roc_curve, "PR": pr_curve}
-    dfs = []
-    for name, metric in metrics.items():
-        df = make_curve_groups(predictions=predictions, metric=metric).with_columns(
-            pl.lit(name).alias("Metric")
-        )
-        dfs.append(df)
-    return pl.concat(dfs)
+def make_baselines(prevalence: pl.DataFrame):
+    one_to_one_line = prevalence.with_columns(
+        pl.lit("ROC").alias("Metric"),
+        pl.lit("Baseline").alias("Curve"),
+        pl.lit([0, 1]).alias("y"),
+    ).explode("x", "y")
+    prevalence = prevalence.explode("x")
+    return pl.concat([prevalence, one_to_one_line], how="diagonal_relaxed")
 
 
 def evaluate_model(config: Config, model: Network):
-    outputs, labels, quartiles = make_predictions(config=config, model=model)
-    outputs_q4_t = outputs[quartiles == 3]
-    labels_q4_t = labels[quartiles == 3]
-    outputs_not_q4_t = outputs[quartiles != 3]
-    labels_not_q4_t = labels[quartiles != 3]
-    predictions = {
-        ("$\\{1, 2, 3, 4\\}$", "$\\{1, 2, 3, 4\\}$"): (outputs, labels),
-        ("$\\{4\\}$", "$\\{4\\}$"): (outputs_q4_t, labels_q4_t),
-        ("$\\{1, 2, 3\\}$", "$\\{4\\}$"): (outputs_not_q4_t, labels_not_q4_t),
-    }
-    metrics = make_metrics_subsets(predictions)
+    if config.predict or not config.filepaths.predictions.is_file():
+        df = make_predictions(config=config, model=model)
+        df.write_csv(config.filepaths.predictions)
+    else:
+        df = pl.read_csv(config.filepaths.predictions)
+    n = df["Next quartile"].count()
+    df_all = df.with_columns(pl.lit("$\\{1,2,3,4\\}$").alias("Quartile subset"))
+    df = df.with_columns(
+        pl.when(pl.col("Quartile").eq(3))
+        .then(pl.lit("$\\{4\\}$"))
+        .otherwise(pl.lit("$\\{1,2,3\\}$"))
+        .alias("Quartile subset")
+    )
+    df = pl.concat([df_all, df])
+    variables = [
+        "Quartile subset",
+        "Sex",
+        "Race",
+        "Age",
+        "Measurement year",
+        "ADI quartile",
+    ]
+    df = df.melt(
+        id_vars=OUTPUT_COLUMNS + ["Quartile", "Next quartile"],
+        value_vars=variables,
+        variable_name="Variable",
+        value_name="Group",
+    )
+    prevalence = make_prevalence(df=df, n=n)
+    grouped_df = df.group_by("Variable", "Group", maintain_order=True)
+    metrics = grouped_df.map_groups(make_metrics)
+    metrics = metrics.join(
+        prevalence.select(["Variable", "Group", "Next quartile", "y"]),
+        on=["Variable", "Group", "Next quartile"],
+    ).rename({"y": "Prevalence"})
     metrics.write_csv("data/results/metrics.csv")
-    curves = make_metric_curves(predictions)
+    pr_curve = grouped_df.map_groups(
+        partial(make_curve, curve=precision_recall_curve, name="PR")
+    )
+    roc_curve = grouped_df.map_groups(partial(make_curve, curve=roc, name="ROC"))
+    baselines = make_baselines(prevalence=prevalence)
+    curves = pl.concat(
+        [pr_curve, roc_curve, baselines],
+        how="diagonal_relaxed",
+    ).select(["Metric", "Curve", "Variable", "Group", "Next quartile", "x", "y"])
     curves.write_csv("data/results/curves.csv")

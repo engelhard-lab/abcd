@@ -1,16 +1,13 @@
-from matplotlib import style
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
-import polars.selectors as cs
 import pandas as pd
 import seaborn as sns
-import seaborn.objects as so
+from toml import load
 
 # from shap import summary_plot
 from matplotlib.patches import Patch
 import textwrap
-
 from abcd.config import Config
 
 
@@ -19,7 +16,7 @@ FORMAT = "png"
 
 def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = None):
     n_display = 20
-    plt.figure(figsize=(16, 14))
+    plt.figure(figsize=(30, 14))
     metadata = metadata.rename(
         {"column": "variable", "dataset": "Dataset"}
     ).with_columns((pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset"))
@@ -35,11 +32,10 @@ def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = N
         .reverse()
         .to_list()
     )
-    df = (
-        df.filter(pl.col("question").is_in(top_questions))
-        .select(["question", "value", "Dataset"])
-        .to_pandas()
+    df = df.filter(pl.col("question").is_in(top_questions)).select(
+        ["question", "value", "Dataset"]
     )
+    sns.set_context("paper", font_scale=2.5)
     g = sns.pointplot(
         data=df,
         x="value",
@@ -49,15 +45,11 @@ def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = N
         linestyles="none",
         order=top_questions,
     )
+    sns.move_legend(g, "upper left", bbox_to_anchor=(1, 1))
     g.set(
-        xlabel="SHAP value coefficient (impact of feature on model output)",
-        ylabel="Feature description",
+        xlabel="SHAP value coefficient (impact of predictor on model output)",
+        ylabel="Predictor",
     )
-    handles, labels = g.get_legend_handles_labels()
-    sorted_labels, sorted_handles = zip(
-        *sorted(zip(labels, handles), key=lambda t: t[0])
-    )
-    g.legend(sorted_handles, sorted_labels, loc="lower left", title="Dataset")
     g.autoscale(enable=True)
     g.set_yticks(g.get_yticks())
     labels = [
@@ -79,8 +71,7 @@ def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = N
     plt.savefig(f"data/plots/shap_coefs{postfix}.{FORMAT}", format=FORMAT)
 
 
-def format_shap_df(df: pl.DataFrame, column_mapping, sex=None):
-    sex = df.drop_in_place("Sex")[0]
+def format_shap_df(df: pl.DataFrame, column_mapping):
     df = (
         df.transpose(include_header=True, header_name="variable")
         .with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
@@ -90,14 +81,20 @@ def format_shap_df(df: pl.DataFrame, column_mapping, sex=None):
     )
     columns = df.drop_in_place("dataset")
     df = df.transpose(column_names=columns).melt().with_columns(pl.col("value").abs())
-    if sex:
-        df = df.with_columns(pl.lit(sex).alias("Sex"))
     return df
 
 
 def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(16, 8))
     shap_values = format_shap_df(shap_values, column_mapping)
+    shap_values = shap_values.with_columns(
+        pl.col("variable").replace(
+            {
+                "Demographics": "Age and sex",
+                "Spatiotemporal": "Site and measurement year",
+            }
+        )
+    )
     order = (
         shap_values.group_by("variable")
         .sum()
@@ -105,16 +102,14 @@ def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
         .to_list()
     )
     g = sns.pointplot(
-        data=shap_values.to_pandas(),
+        data=shap_values,
         x="value",
         y="variable",
-        # hue="sex",
         linestyles="none",
         order=order,
         errorbar=("se", 2),
-        # estimator="median",
     )
-    g.set(ylabel="Feature group", xlabel="Absolute summed SHAP values")
+    g.set(ylabel="Predictor group", xlabel="Absolute summed SHAP values")
     g.yaxis.grid(True)
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
@@ -146,7 +141,7 @@ def sex_shap_plot(df: pl.DataFrame, column_mapping, subset=None):
         linestyles="none",
         # order=order,
     )
-    g.set(ylabel="Feature group", xlabel="Absolute summed SHAP values")
+    g.set(ylabel="Predictor group", xlabel="Absolute summed SHAP values")
     g.yaxis.grid(True)
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
@@ -158,8 +153,10 @@ def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
     sns.set_theme(style="white", palette="deep")
     sns.set_context("paper", font_scale=2.0)
     column_colors = {}
-    color_mapping["ACEs"] = sns.color_palette("tab20")[-1]
-    color_mapping["Spatiotemporal"] = sns.color_palette("tab20")[-2]
+    color_mapping["Adverse childhood experiences (ACEs)"] = sns.color_palette("tab20")[
+        -1
+    ]
+    color_mapping["Measurement year and site"] = sns.color_palette("tab20")[-2]
     for col, dataset in column_mapping.items():
         column_colors[col] = color_mapping[dataset]
     colors = [column_colors[col] for col in feature_names[1:] if col in column_colors]
@@ -197,61 +194,224 @@ def format_shap_values(shap_values_list, X, sex):
     )
 
 
-def auc_subsets():
-    plt.figure(figsize=(10, 8))
-    df = pl.read_csv("data/results/roc_pr.csv")
-    df = df.melt(id_vars="subset")
-    print(df)
-    g = sns.barplot(
-        data=df.to_pandas(),
-        x="variable",
-        y="value",
-        hue="subset",
-        errorbar=("sd", 2),
+def quartile_curves():
+    df = pl.read_csv("data/results/curves.csv")
+    df = (
+        df.filter(
+            (pl.col("Group").eq("$\\{1,2,3,4\\}$") | pl.col("Next quartile").eq(4))
+            & pl.col("Variable").eq("Quartile subset")
+        )
+        .with_columns(pl.col("Metric").cast(pl.Enum(["ROC", "PR"])))
+        .sort("Metric")
     )
-    g.set(ylabel="AUROC", xlabel="p-factor quartile at $t+1$")
-    g.legend(title="Subset at $t$")
-    plt.tight_layout()
-    plt.show()
-
-
-def metric_curves():
-    df = pl.read_csv("data/results/roc_pr.csv")
-    p = sns.relplot(
+    g = sns.relplot(
         data=df,
         x="x",
         y="y",
-        hue="p-factor quartile$_{t+1}$",
-        style="p-factor quartile$_t$",
-        col="metric",
-        # row="group",
+        hue="Next quartile",
+        style="Curve",
+        row="Metric",
+        col="Group",
         kind="line",
         errorbar=None,
         palette="deep",
-        facet_kws={"sharey": False, "sharex": False, "legend_out": True},
+        facet_kws={"sharex": False, "sharey": False},
     )
-    for i, ax in enumerate(p.axes.flat):
-        if i in {0, 2}:
-            ax.plot([0, 1], [0, 1], linestyle="-.", color="black")
-            ax.set_ylabel("True positive rate")
-            ax.set_xlabel("False positive rate")
+    g.set_titles("")
+    labels = ["A", "B", "C", "D", "E", "F"]
+    for i, (ax, label) in enumerate(zip(g.axes.flat, labels)):
+        ax.text(0.05, 0.95, label, fontsize=22)
+        if i == 3:
+            ax.set_ylabel("Positive predictive value")
+        if i == 0:
+            ax.set_ylabel("Sensitivity (true positive rate)")
+        if i <= 2:
+            ax.set_xlabel("Type I error (false positive rate)")
         else:
-            ax.axhline(0.25, linestyle="-.", color="black")
-            ax.set_ylabel("Precision")
-            ax.set_xlabel("Recall")
-    p.set_titles("")
-    plt.subplots_adjust(hspace=0.25, wspace=0.25)
-    plt.show()
+            ax.set_xlabel("Sensitivity (true positive rate)")
+            ax.set_ylim(-0.05, 1.05)
+    plt.savefig(f"data/plots/curves.{FORMAT}", format=FORMAT)
 
 
-def plot(dataloader):
-    sns.set_theme(style="darkgrid", palette="deep")
-    sns.set_context("paper", font_scale=1.75)
+def demographic_curves():
+    df = pl.read_csv("data/results/curves.csv")
+    df = (
+        df.filter(
+            pl.col("Variable").ne("Quartile subset"),
+            pl.col("Next quartile").eq(4),
+            pl.col("Group").ne("16"),
+        )
+        .with_columns(
+            pl.col("Metric").cast(pl.Enum(["ROC", "PR"])),
+            pl.col("Curve").cast(pl.Enum(["Model", "Baseline"])),
+            pl.when(pl.col("Curve").eq("Model") & pl.col("Metric").eq("ROC"))
+            .then(pl.col("x"))
+            .when(pl.col("Metric").eq("PR"))
+            .then(pl.col("x"))
+            .otherwise(pl.lit(None)),
+        )
+        .sort("Metric", "Curve", "Variable", "Group")
+    )
+    g = sns.FacetGrid(
+        df,
+        row="Variable",
+        col="Metric",
+        height=4,
+        aspect=1.5,
+        sharex=False,
+        sharey=False,
+    )
+    for (row_var, col_var), facet_df in df.group_by("Variable", "Metric"):  # type: ignore
+        ax = g.axes_dict[(row_var, col_var)]
+        facet_df = facet_df.sort(pl.col("Group").cast(pl.Float32, strict=False))
+        row_var = str(row_var)
+        sns.lineplot(
+            x="x",
+            y="y",
+            hue=row_var,
+            style="Curve",
+            data=facet_df.rename({"Group": row_var}),
+            ax=ax,
+            errorbar=None,
+        )
+        if col_var == "PR":
+            ax.set_ylabel("Positive predictive value")
+            ax.set_xlabel(xlabel="Sensitivity (true positive rate)")
+            sns.move_legend(ax, "upper left", bbox_to_anchor=(1, 1))
+        else:
+            ax.legend().remove()
+            ax.set_ylabel("Sensitivity (true positive rate)")
+            ax.set_xlabel("Type I error (false positive rate)")
+            ax.plot([0, 1], [0, 1], linestyle="--", color="black")
+    g.set_titles("")
+    plt.tight_layout()
+    plt.savefig(
+        f"data/plots/demographic_curves.{FORMAT}", format=FORMAT, bbox_inches="tight"
+    )
 
-    metric_curves()
+
+def demographic_roc_curves():
+    df = (
+        pl.read_csv("data/results/demographic_roc.csv")
+        .filter(
+            pl.col("Label").eq(4),
+            pl.col("Group").ne("16"),
+            pl.col("Variable").ne("All"),
+        )
+        .sort("Variable", "Group")
+    )
+    sns.set_theme(font_scale=2.5)
+    g = sns.FacetGrid(df, col="Variable", col_wrap=2, height=8)
+    for col, facet_df in df.group_by(by="Variable"):
+        col = str(col)
+        ax = g.axes[g.col_names.index(col)]
+        sns.lineplot(
+            x="False positive rate",
+            y="True positive rate",
+            hue=col,
+            # style="Curve",
+            data=facet_df.rename({"Group": col}),
+            ax=ax,
+            errorbar=None,
+        )
+        ax.set(xlabel="", ylabel="")
+        ax.legend(title=col, loc="lower right")
+    g.set_titles("")
+    g.set_axis_labels(
+        "Type I error (false positive rate)", "Sensitivity (true positive rate)"
+    )
+    labels = ["A", "B", "C", "D"]
+    for ax, label in zip(g.axes.flat, labels):
+        ax.text(0.05, 0.95, label, fontsize=24)
+        ax.plot([0, 1], [0, 1], linestyle="--", color="black")
+    plt.tight_layout()
+    plt.savefig(
+        f"data/plots/demographic_roc.{FORMAT}", format=FORMAT, bbox_inches="tight"
+    )
+
+
+def cbcl_distributions(config: Config):
+    cbcl_scales = config.labels.cbcl_labels + [
+        "cbcl_scr_syn_internal_t",
+        "cbcl_scr_syn_external_t",
+    ]
+    df = pl.read_csv(
+        "data/labels/mh_p_cbcl.csv",
+        columns=["src_subject_id", "eventname"] + cbcl_scales,
+    )
+    bin_labels = [str(i) for i in range(config.preprocess.n_quantiles)]
+    p_factor = (
+        pl.read_csv("data/labels/p_factors.csv")
+        .select(["src_subject_id", "eventname", "p_factor"])
+        .with_columns(
+            pl.col("p_factor")
+            .qcut(
+                quantiles=config.preprocess.n_quantiles,
+                labels=bin_labels,
+                allow_duplicates=True,
+            )
+            .cast(pl.Int32)
+            .add(1)
+        )
+    )
+    df = df.join(p_factor, on=["src_subject_id", "eventname"], how="inner").melt(
+        id_vars=["src_subject_id", "eventname", "p_factor"]
+    )
+    cbcl_names = [
+        "Anxious/Depressed",
+        "Withdrawn/Depressed",
+        "Somatic Complaints",
+        "Social Problems",
+        "Thought Problems",
+        "Attention Problems",
+        "Rule-Breaking Behavior",
+        "Aggressive Behavior",
+        "Internalizing",
+        "Externalizing",
+    ]
+    name_mapping = dict(zip(cbcl_scales, cbcl_names))
+    df = (
+        df.with_columns(
+            pl.col("variable").replace(name_mapping),
+            pl.col("p_factor").cast(pl.String).alias("Quartile"),
+        )
+        .rename({"variable": "CBCL Syndrome Scale", "value": "t-score"})
+        .sort("Quartile")
+    )
+    sns.set_theme(font_scale=3.0)
+    g = sns.catplot(
+        data=df,
+        x="Quartile",
+        y="t-score",
+        col="CBCL Syndrome Scale",
+        kind="box",
+        col_wrap=4,
+        height=6,
+    )
+    # g.tick_params(axis="x", rotation=30)
+    g.set_titles("{col_name}")
+    plt.savefig(
+        f"data/plots/cbcl_distributions.{FORMAT}",
+        format=FORMAT,
+        bbox_inches="tight",
+    )
+
+
+def plot(config):
+    sns.set_theme(style="darkgrid", palette="deep", font_scale=2.0)
+    sns.set_context("paper", font_scale=2.0)
+
+    # cbcl_distributions(config=config)
+    # roc_curves()
+    # pr_curves()
+    # quartile_curves()
+    demographic_curves()
+    # demographic_roc_curves()
+    # metric_curves()
+
     # feature_names = (
     #     pl.read_csv("data/analytic/test.csv", n_rows=1)
-    #     .drop(["src_subject_id", "p_factor"])
+    #     .drop(["src_subject_id", "p_factor", "label"])
     #     .columns
     # )
     # test_dataloader = iter(dataloader)
@@ -290,6 +450,5 @@ def plot(dataloader):
 
 
 if __name__ == "__main__":
-    plot(dataloader=None)
-    # auc_subsets()
-    # roc_curves()
+    config = Config(**load("config.toml"))
+    plot(config)

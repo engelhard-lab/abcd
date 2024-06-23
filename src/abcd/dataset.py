@@ -1,19 +1,18 @@
 from torch import tensor
 from lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader
-from torch.nn.utils.rnn import pad_sequence
 import polars as pl
 
 
 def make_tensor_dataset(dataset: pl.DataFrame):
     data = []
-    for subject in dataset.partition_by("src_subject_id", maintain_order=True):
+    for subject in dataset.partition_by(
+        "src_subject_id", maintain_order=True, include_key=False
+    ):
         label = subject.drop_in_place("label")
         label = tensor(label.to_numpy()).float()
-        subject.drop_in_place("src_subject_id")
-        quartile = tensor(subject.drop_in_place("quartile").to_numpy()).float()
         features = tensor(subject.to_numpy()).float()
-        data.append((features, label, quartile))
+        data.append((features, label))
     return data
 
 
@@ -25,16 +24,8 @@ class RNNDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, index):
-        features, labels, quartile = self.dataset[index]
-        return features, labels, quartile
-
-
-def collate(batch):
-    sequence, label, quartile = zip(*batch)
-    sequence = pad_sequence(sequence, batch_first=True)
-    label = pad_sequence(label, batch_first=True, padding_value=float("nan"))
-    quartile = pad_sequence(quartile, batch_first=True, padding_value=float("nan"))
-    return sequence, label.unsqueeze(-1), quartile
+        features, labels = self.dataset[index]
+        return features, labels
 
 
 class ABCDDataModule(LightningDataModule):
@@ -47,7 +38,6 @@ class ABCDDataModule(LightningDataModule):
         self.test_dataset = dataset_class(dataset=test)
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.collate_fn = collate if dataset_class == RNNDataset else None
 
     def train_dataloader(self):
         return DataLoader(
@@ -57,7 +47,6 @@ class ABCDDataModule(LightningDataModule):
             num_workers=self.num_workers,
             drop_last=True,
             pin_memory=True,
-            collate_fn=self.collate_fn,
             persistent_workers=True,
             multiprocessing_context="fork",
         )
@@ -69,7 +58,6 @@ class ABCDDataModule(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            collate_fn=self.collate_fn,
             persistent_workers=True,
             multiprocessing_context="fork",
         )
@@ -81,7 +69,6 @@ class ABCDDataModule(LightningDataModule):
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
-            collate_fn=self.collate_fn,
             persistent_workers=True,
             multiprocessing_context="fork",
         )

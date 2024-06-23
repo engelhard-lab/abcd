@@ -5,15 +5,15 @@ from abcd.config import Features
 
 def rename_questions() -> pl.Expr:
     return (
-        pl.when(pl.col("column").str.contains("total_core"))
+        pl.when(pl.col("variable").str.contains("total_core"))
         .then(pl.lit("Adverse childhood experiences"))
-        .when(pl.col("column").str.contains("adi_percentile"))
+        .when(pl.col("variable").str.contains("adi_percentile"))
         .then(pl.lit("Area deprivation index percentile"))
-        .when(pl.col("column").str.contains("parent_highest_education"))
+        .when(pl.col("variable").str.contains("parent_highest_education"))
         .then(pl.lit("Parent highest education"))
-        .when(pl.col("column").str.contains("demo_comb_income_v2"))
+        .when(pl.col("variable").str.contains("demo_comb_income_v2"))
         .then(pl.lit("Household income"))
-        .when(pl.col("column").eq(pl.lit("eventname")))
+        .when(pl.col("variable").eq(pl.lit("eventname")))
         .then(pl.lit("Measurement year"))
         .otherwise(pl.col("question"))
         .alias("question")
@@ -22,16 +22,16 @@ def rename_questions() -> pl.Expr:
 
 def rename_datasets() -> pl.Expr:
     return (
-        pl.when(pl.col("column").str.contains("eventname|site_id"))
-        .then(pl.lit("Spatiotemporal"))
-        .when(pl.col("column").str.contains("demo_sex_v2_"))
-        .then(pl.lit("Demographics"))
+        pl.when(pl.col("variable").str.contains("eventname|site_id"))
+        .then(pl.lit("Measurement year and site"))
+        .when(pl.col("variable").str.contains("demo_sex_v2_|interview_age"))
+        .then(pl.lit("Age and sex"))
         .when(
-            pl.col("column").str.contains(
+            pl.col("variable").str.contains(
                 "adi_percentile|demo_comb_income_v2|parent_highest_education"
             )
         )
-        .then(pl.lit("Socio-economic status"))
+        .then(pl.lit("Socio-economic status & area deprivation"))
         .otherwise(pl.col("dataset"))
         .alias("dataset")
     )
@@ -40,12 +40,12 @@ def rename_datasets() -> pl.Expr:
 def make_variable_df(dfs: list[pl.DataFrame], features: Features) -> pl.DataFrame:
     metadata_dfs: list[pl.DataFrame] = []
     for df, (filename, metadata) in zip(dfs, features.model_dump().items()):
-        table_metadata = {"table": [], "dataset": [], "respondent": [], "column": []}
+        table_metadata = {"table": [], "dataset": [], "respondent": [], "variable": []}
         for column in df.columns:
             table_metadata["table"].append(filename)
             table_metadata["dataset"].append(metadata["name"])
             table_metadata["respondent"].append(metadata["respondent"])
-            table_metadata["column"].append(column)
+            table_metadata["variable"].append(column)
             metadata_df = pl.DataFrame(table_metadata)
         metadata_dfs.append(metadata_df)
     return pl.concat(metadata_dfs)
@@ -76,7 +76,7 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
         .rename(
             {
                 "table_name": "table",
-                "var_name": "column",
+                "var_name": "variable",
                 "var_label": "question",
                 "notes": "response",
             }
@@ -85,7 +85,7 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
     )
     df = (
         (
-            variables.join(questions, on=["table", "column"], how="left")
+            variables.join(questions, on=["table", "variable"], how="left")
             .with_columns(
                 format_questions(),
                 pl.col("dataset").str.replace_all("_", " "),
@@ -100,7 +100,7 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
                 rename_datasets(),
             )
         )
-        .unique(subset=["column"])
-        .sort("dataset", "respondent", "column")
+        .unique(subset=["variable"])
+        .sort("dataset", "respondent", "variable")
     )
     df.write_csv("data/variables.csv")

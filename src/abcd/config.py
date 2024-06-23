@@ -9,9 +9,11 @@ class Filepaths(BaseModel):
     checkpoints: Path
     study: Path
     logs: Path
+    analytic: Path
     train: Path
     val: Path
     test: Path
+    predictions: Path
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -20,9 +22,17 @@ class Filepaths(BaseModel):
         self.checkpoints = self.data / self.checkpoints
         self.study = self.data / self.study
         self.logs = self.data / self.logs
-        self.train = self.data / self.train
-        self.val = self.data / self.val
-        self.test = self.data / self.test
+        self.analytic = self.data / self.analytic
+        self.train = self.analytic / self.train
+        self.val = self.analytic / self.val
+        self.test = self.analytic / self.test
+        self.predictions = self.data / self.predictions
+
+
+class Preprocess(BaseModel):
+    n_neighbors: int
+    n_quantiles: int
+    train_size: float
 
 
 class Training(BaseModel):
@@ -86,23 +96,21 @@ class Features(BaseModel):
 
 class Config(BaseModel):
     fast_dev_run: bool
-    name: str
     random_seed: int
     regenerate: bool
+    predict: bool
     tune: bool
-    refit: bool
     evaluate: bool
+    shap: bool
     plot: bool
     tables: bool
     n_trials: int
     verbose: bool
-    train_size: float
     n_trials: int
-    method: str
     join_on: list[str]
     target: str
-    n_quantiles: int
     filepaths: Filepaths
+    preprocess: Preprocess
     labels: Labels
     features: Features
     training: Training
@@ -112,4 +120,3 @@ class Config(BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
-        self.filepaths.study = self.filepaths.study / (self.name + ".pkl")

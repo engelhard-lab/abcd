@@ -1,31 +1,35 @@
 fast_dev_run = false
-name = "all"
 random_seed = 42
 regenerate = false
 tune = false
-refit = false
-evaluate = true
-plot = false
+predict = false
+evaluate = false
+shap = false
+plot = true
 tables = false
 verbose = false
-train_size = 0.8
 n_trials = 64
 join_on = ["src_subject_id", "eventname"]
 target = "next_p_factor"
-# choose from: "rnn" or "mlp"
-method = "rnn"
-n_quantiles = 4
 
 [filepaths]
 data = "data/"
 features = "features/"
 labels = "labels/p_factors.csv"
-checkpoints = "checkpoints"
-study = "studies"
+checkpoints = "checkpoints/"
+study = "studies/study.pkl"
 logs = "lightning_logs"
-train = "analytic/train.csv"
-val = "analytic/val.csv"
-test = "analytic/test.csv"
+analytic = "analytic/"
+train = "train.csv"
+val = "val.csv"
+test = "test.csv"
+predictions = "predictions.csv"
+
+[preprocess]
+n_neighbors = 5
+n_quantiles = 4
+train_size = 0.8
+
 
 [training]
 batch_size = 512
@@ -76,12 +80,13 @@ name = "Demographics"
 respondent = "Parent"
 columns = [
     "demo_sex_v2",
+    "race_ethnicity",
     "demo_comb_income_v2",
     "demo_prnt_ed_v2",
     "demo_prtnr_ed_v2",
 ]
 [features.led_l_adi]
-name = "Demographics"
+name = "Area deprivation"
 respondent = "Parent"
 columns = [
     "reshist_addr1_adi_perc",
@@ -93,8 +98,8 @@ name = "Demographics"
 respondent = "Parent"
 columns = ["interview_age", "site_id_l"]
 [features.abcd_aces]
-name = "Adverse childhood experiences"
-respondent = "Parent"                  # TODO check if this is from parent, youth, or both
+name = "Adverse childhood experiences (ACEs)"
+respondent = "Parent"                         # TODO check if this is from parent, youth, or both
 columns = ["total_core"]
 [features.ce_p_fes]
 name = "Family environment"
@@ -105,27 +110,27 @@ name = "Family environment"
 respondent = "Youth"
 columns = []
 [features.ce_p_nsc]
-name = "Neighborhood"
+name = "Neighborhood safety"
 respondent = "Parent"
 columns = []
 [features.ce_y_nsc]
-name = "Neighborhood"
+name = "Neighborhood safety"
 respondent = "Youth"
 columns = []
 [features.ce_y_pm]
-name = "Problem monitor"
+name = "Problem monitoring"
 respondent = "Youth"
 columns = []
 [features.ce_p_psb]
-name = "Prosocial"
+name = "Prosocial behaviors"
 respondent = "Parent"
 columns = []
 [features.ce_y_psb]
-name = "Prosocial"
+name = "Prosocial behaviors"
 respondent = "Youth"
 columns = []
 [features.ce_y_srpf]
-name = "School"
+name = "School risk and protective factors"
 respondent = "Youth"
 columns = []
 [features.nt_p_stq]
@@ -137,7 +142,7 @@ name = "Screentime"
 respondent = "Youth"
 columns = []
 [features.ph_p_sds]
-name = "Sleep disturbance"
+name = "Sleep disturbances"
 respondent = "Parent"
 columns = []
 [features.su_p_pr]
@@ -145,7 +150,7 @@ name = "Parental rules"
 respondent = "Parent"
 columns = []
 [features.mri_y_dti_fa_fs_at]
-name = "DTIFA"
+name = "Diffusion tensor imaging"
 respondent = "Youth"
 columns = [
     "dmdtifp1_10",
@@ -171,7 +176,7 @@ columns = [
     "dmdtifp1_20",
 ]
 [features.mri_y_rsfmr_cor_gp_gp]
-name = "RSFMRI"
+name = "Resting functional MRI"
 respondent = "Youth"
 columns = [
     "rsfmri_c_ngd_cgc_ngd_dt",
@@ -182,14 +187,14 @@ columns = [
     "rsfmri_c_ngd_cgc_ngd_cgc",
 ]
 [features.mri_y_tfmr_sst_csvcg_dsk]
-name = "FMRI task"
+name = "Task-based functional MRI"
 respondent = "Youth"
 columns = ["tfmri_sacsvcg_bcdk_bktslh", "tfmri_sacsvcg_bcdk_bktsrh"]
 [features.mri_y_tfmr_mid_alrvn_dsk]
-name = "FMRI task"
+name = "Task-based functional MRI"
 respondent = "Youth"
 columns = ["tfmri_ma_alrvn_b_cds_bkslh", "tfmri_ma_alrvn_b_cds_bksrh"]
 [features.mri_y_tfmr_nback_2b_dsk]
-name = "FMRI task"
+name = "Task-based functional MRI"
 respondent = "Youth"
 columns = ["tfmri_nback_all_339", "tfmri_nback_all_373"]
