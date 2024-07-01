@@ -2,7 +2,13 @@ from functools import partial
 from typing import Callable
 import torch
 import polars as pl
-from torchmetrics.classification import MulticlassAUROC, MulticlassAveragePrecision
+import polars.selectors as cs
+from torchmetrics.classification import (
+    MulticlassAUROC,
+    MulticlassAveragePrecision,
+    MulticlassSpecificityAtSensitivity,
+    MulticlassSensitivityAtSpecificity,
+)
 from torchmetrics.wrappers import BootStrapper
 from torchmetrics.functional import (
     roc,
@@ -17,10 +23,10 @@ from abcd.preprocess import get_data
 
 REVERSE_EVENT_MAPPING = {
     0: "Baseline",
-    1: "Year 1",
-    2: "Year 2",
-    3: "Year 3",
-    4: "Year 4",
+    1: "1",
+    2: "2",
+    3: "3",
+    4: "4",
 }
 OUTPUT_COLUMNS = ["1", "2", "3", "4"]
 
@@ -37,15 +43,10 @@ def make_predictions(config: Config, model: Network):
         dataset_class=RNNDataset,
     )
     predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
-    outputs, labels = zip(*predictions)
+    outputs, _ = zip(*predictions)
     outputs = torch.concat(outputs).permute(0, 2, 1).contiguous().flatten(0, 1)
-    # FIXME try these instead of metadata column Next quartile
-    # labels = pl.Series(torch.concat(labels).flatten().numpy()).fill_nan(None)
     metadata = pl.read_csv("data/test_metadata.csv")
     outputs = pl.DataFrame(outputs.cpu().numpy(), schema=OUTPUT_COLUMNS)
-    # .with_columns(
-    #     labels.alias("Next quartile")
-    # )
     return pl.concat([metadata, outputs], how="horizontal").drop_nulls("Next quartile")
 
 
@@ -121,20 +122,49 @@ def make_metrics(df: pl.DataFrame):
     return df
 
 
-def make_prevalence(df: pl.DataFrame, n: int):
-    return (
-        df.group_by(["Next quartile", "Variable", "Group"])
-        .count()
+def make_prevalence(df: pl.DataFrame):
+    df = (
+        df.with_columns(pl.col("Next quartile").add(1))
+        .to_dummies(["Next quartile"])
+        .group_by("Variable", "Group")
+        .agg(cs.contains("Next quartile_").mean())
+        .rename(lambda x: x.replace("Next quartile_", ""))
+        .melt(
+            id_vars=["Variable", "Group"],
+            variable_name="Next quartile",
+            value_name="y",
+        )
         .with_columns(
-            pl.col("count").truediv(pl.lit(n)).alias("y"),
-            pl.col("Next quartile").add(1).cast(pl.String),
             pl.lit("PR").alias("Metric"),
             pl.lit("Baseline").alias("Curve"),
             pl.lit([0, 1]).alias("x"),
         )
-        .drop("count")
-        .drop_nulls()
     )
+    # print(df)
+    # df = df.with_columns(
+    #     pl.col("Next quartile").count().over("Next quartile").alias("count")
+    # )
+    # df = df.with_columns(pl.count().over(["Variable", "Group"]).alias("n"))
+    # print(
+    #     df.filter(pl.col("Variable").eq("Quartile subset"))
+    #     .group_by(["Variable", "Group"])
+    #     .count()
+    # )
+    # df = df.with_columns(pl.col("n").truediv("count").alias("Prevalence"))
+    # df = (
+    #     df.group_by(["Next quartile", "Variable", "Group"])
+    #     .count()
+    #     # .with_columns(
+    #     #     pl.col("count").truediv(pl.lit(n)).alias("y"),
+    #     #     pl.col("Next quartile").add(1).cast(pl.String),
+    #     #     pl.lit("PR").alias("Metric"),
+    #     #     pl.lit("Baseline").alias("Curve"),
+    #     #     pl.lit([0, 1]).alias("x"),
+    #     # )
+    #     # .drop("count")
+    #     .drop_nulls()
+    # )
+    return df
 
 
 def make_baselines(prevalence: pl.DataFrame):
@@ -147,27 +177,38 @@ def make_baselines(prevalence: pl.DataFrame):
     return pl.concat([prevalence, one_to_one_line], how="diagonal_relaxed")
 
 
+def calc_sensitivity_and_specificity(df: pl.DataFrame):
+    df = df.filter(pl.col("Quartile subset").eq("{1,2,3}"))
+    outputs, labels = get_predictions(df=df)
+    specificity = MulticlassSpecificityAtSensitivity(
+        num_classes=outputs.shape[-1], min_sensitivity=0.5
+    )
+    spec = specificity(outputs, labels)
+    sensitivity = MulticlassSensitivityAtSpecificity(
+        num_classes=outputs.shape[-1], min_specificity=0.5
+    )
+    sens = sensitivity(outputs, labels)
+    return spec, sens
+
+
 def evaluate_model(config: Config, model: Network):
     if config.predict or not config.filepaths.predictions.is_file():
         df = make_predictions(config=config, model=model)
         df.write_csv(config.filepaths.predictions)
     else:
         df = pl.read_csv(config.filepaths.predictions)
-    n = df["Next quartile"].count()
-    df_all = df.with_columns(pl.lit("$\\{1,2,3,4\\}$").alias("Quartile subset"))
     df = df.with_columns(
         pl.when(pl.col("Quartile").eq(3))
-        .then(pl.lit("$\\{4\\}$"))
-        .otherwise(pl.lit("$\\{1,2,3\\}$"))
+        .then(pl.lit("{4}"))
+        .otherwise(pl.lit("{1,2,3}"))
         .alias("Quartile subset")
     )
-    df = pl.concat([df_all, df])
     variables = [
         "Quartile subset",
         "Sex",
         "Race",
         "Age",
-        "Measurement year",
+        "Year",
         "ADI quartile",
     ]
     df = df.melt(
@@ -176,7 +217,12 @@ def evaluate_model(config: Config, model: Network):
         variable_name="Variable",
         value_name="Group",
     )
-    prevalence = make_prevalence(df=df, n=n)
+    df_all = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
+        pl.lit("{1,2,3,4}").alias("Group")
+    )
+    df = pl.concat([df_all, df]).drop_nulls("Group")
+    # n = df_all.shape[0]
+    prevalence = make_prevalence(df=df)
     grouped_df = df.group_by("Variable", "Group", maintain_order=True)
     metrics = grouped_df.map_groups(make_metrics)
     metrics = metrics.join(
@@ -194,3 +240,17 @@ def evaluate_model(config: Config, model: Network):
         how="diagonal_relaxed",
     ).select(["Metric", "Curve", "Variable", "Group", "Next quartile", "x", "y"])
     curves.write_csv("data/results/curves.csv")
+
+    spec, sens = calc_sensitivity_and_specificity(df=df)
+    print(
+        "Specificity:",
+        spec[0].numpy().round(decimals=2),
+        "threshold:",
+        spec[1].numpy().round(decimals=2),
+    )
+    print(
+        "Senstivity:",
+        sens[0].numpy().round(decimals=2),
+        "threshold:",
+        sens[1].numpy().round(decimals=2),
+    )

@@ -11,15 +11,15 @@ import textwrap
 from abcd.config import Config
 
 
-FORMAT = "png"
+FORMAT = "pdf"
 
 
 def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = None):
     n_display = 20
     plt.figure(figsize=(30, 14))
-    metadata = metadata.rename(
-        {"column": "variable", "dataset": "Dataset"}
-    ).with_columns((pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset"))
+    metadata = metadata.rename({"dataset": "Dataset"}).with_columns(
+        (pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset")
+    )
     df = pl.read_csv("data/results/shap_coefs.csv")
     df = shap_coefs.join(other=metadata, on="variable", how="inner")
     if subset:
@@ -91,7 +91,7 @@ def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
         pl.col("variable").replace(
             {
                 "Demographics": "Age and sex",
-                "Spatiotemporal": "Site and measurement year",
+                "Spatiotemporal": "Site and year",
             }
         )
     )
@@ -156,7 +156,7 @@ def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
     color_mapping["Adverse childhood experiences (ACEs)"] = sns.color_palette("tab20")[
         -1
     ]
-    color_mapping["Measurement year and site"] = sns.color_palette("tab20")[-2]
+    color_mapping["Site and year"] = sns.color_palette("tab20")[-2]
     for col, dataset in column_mapping.items():
         column_colors[col] = color_mapping[dataset]
     colors = [column_colors[col] for col in feature_names[1:] if col in column_colors]
@@ -198,7 +198,7 @@ def quartile_curves():
     df = pl.read_csv("data/results/curves.csv")
     df = (
         df.filter(
-            (pl.col("Group").eq("$\\{1,2,3,4\\}$") | pl.col("Next quartile").eq(4))
+            (pl.col("Group").eq("{1,2,3,4}") | pl.col("Next quartile").eq(4))
             & pl.col("Variable").eq("Quartile subset")
         )
         .with_columns(pl.col("Metric").cast(pl.Enum(["ROC", "PR"])))
@@ -218,7 +218,7 @@ def quartile_curves():
         facet_kws={"sharex": False, "sharey": False},
     )
     g.set_titles("")
-    labels = ["A", "B", "C", "D", "E", "F"]
+    labels = ["a", "b", "c", "d", "e", "f"]
     for i, (ax, label) in enumerate(zip(g.axes.flat, labels)):
         ax.text(0.05, 0.95, label, fontsize=22)
         if i == 3:
@@ -402,13 +402,8 @@ def plot(config):
     sns.set_context("paper", font_scale=2.0)
 
     # cbcl_distributions(config=config)
-    # roc_curves()
-    # pr_curves()
     # quartile_curves()
-    demographic_curves()
-    # demographic_roc_curves()
-    # metric_curves()
-
+    # demographic_curves()
     # feature_names = (
     #     pl.read_csv("data/analytic/test.csv", n_rows=1)
     #     .drop(["src_subject_id", "p_factor", "label"])
@@ -418,10 +413,10 @@ def plot(config):
     # X, _ = next(test_dataloader)
     # X = pd.DataFrame(X.mean(dim=1), columns=feature_names)  # .view(-1, X.shape[2])
 
-    # metadata = pl.read_csv("data/variables.csv")
-    # shap_coefs = pl.read_csv("data/results/shap_coefs.csv")
+    metadata = pl.read_csv("data/variables.csv")
+    shap_coefs = pl.read_csv("data/results/shap_coefs.csv")
 
-    # shap_plot(shap_coefs=shap_coefs, metadata=metadata, textwrap_width=75)
+    shap_plot(shap_coefs=shap_coefs, metadata=metadata, textwrap_width=75)
     # shap_plot(
     #     shap_coefs=shap_coefs,
     #     metadata=metadata,
@@ -429,14 +424,14 @@ def plot(config):
     #     textwrap_width=50,
     # )
 
-    # column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
-    # shap_values = pl.read_csv("data/results/shap_values.csv")
+    column_mapping = dict(zip(metadata["variable"], metadata["dataset"]))
+    shap_values = pl.read_csv("data/results/shap_values.csv")
     # male_shap_values = format_shap_values(shap_values_list, X, sex="Male")
     # shap_values_list = torch_load("data/results/shap_values_female.pt")
     # female_shap_values = format_shap_values(shap_values_list, X, sex="Female")
     # shap_values = pl.concat([male_shap_values, female_shap_values])
 
-    # grouped_shap_plot(shap_values=shap_values, column_mapping=column_mapping)
+    grouped_shap_plot(shap_values=shap_values, column_mapping=column_mapping)
     # sex_shap_plot(df=shap_values, column_mapping=column_mapping)
 
     # names = [data["name"] for data in config.features.model_dump().values()]

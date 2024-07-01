@@ -14,7 +14,7 @@ def rename_questions() -> pl.Expr:
         .when(pl.col("variable").str.contains("demo_comb_income_v2"))
         .then(pl.lit("Household income"))
         .when(pl.col("variable").eq(pl.lit("eventname")))
-        .then(pl.lit("Measurement year"))
+        .then(pl.lit("Year"))
         .otherwise(pl.col("question"))
         .alias("question")
     )
@@ -23,7 +23,7 @@ def rename_questions() -> pl.Expr:
 def rename_datasets() -> pl.Expr:
     return (
         pl.when(pl.col("variable").str.contains("eventname|site_id"))
-        .then(pl.lit("Measurement year and site"))
+        .then(pl.lit("Site and year"))
         .when(pl.col("variable").str.contains("demo_sex_v2_|interview_age"))
         .then(pl.lit("Age and sex"))
         .when(

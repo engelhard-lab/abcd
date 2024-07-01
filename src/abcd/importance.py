@@ -38,7 +38,7 @@ def regress_shap_values(shap_values, X):
 
 
 def make_shap(train, model, data_module):
-    columns = list(train.drop(["src_subject_id", "p_factor"], axis=1).columns)
+    columns = train.drop(["src_subject_id", "label"]).columns
     test_dataloader = iter(data_module.test_dataloader())
     X, _ = next(test_dataloader)
     background, _ = next(test_dataloader)

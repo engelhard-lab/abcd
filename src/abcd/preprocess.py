@@ -60,8 +60,8 @@ def make_demographics(df: pl.DataFrame):
         .with_columns(
             pl.all().forward_fill().backward_fill().over("src_subject_id"),
         )
-        .to_dummies("demo_sex_v2", drop_first=True)
-        .drop("demo_sex_v2_3")
+        .to_dummies("demo_sex_v2")
+        .drop("demo_sex_v2_2", "demo_sex_v2_3")
     )
     return df
 
@@ -72,7 +72,7 @@ def make_adi(df: pl.DataFrame):
         "reshist_addr2_adi_perc",
         "reshist_addr3_adi_perc",
     ]
-    return df.with_columns(
+    return df.select(
         pl.mean_horizontal(columns).forward_fill().alias("adi_percentile")
     ).drop(columns)
 
@@ -187,7 +187,7 @@ def make_dataset(dfs: list[pl.DataFrame], config: Config):
 def make_metadata(df: pl.DataFrame):
     rename_mapping = {
         "src_subject_id": "Subject ID",
-        "eventname": "Measurement year",
+        "eventname": "Year",
         "p_factor": "Quartile",
         "next_p_factor": "Next quartile",
         "demo_sex_v2_1": "Sex",
@@ -201,7 +201,7 @@ def make_metadata(df: pl.DataFrame):
         df.rename(rename_mapping)
         .select(rename_mapping.values())
         .with_columns(
-            pl.col("Measurement year").replace(REVERSE_EVENT_MAPPING),
+            pl.col("Year").replace(REVERSE_EVENT_MAPPING),
             pl.col("Sex").replace(SEX_MAPPING),
             pl.col("Race").replace(RACE_MAPPING),
             pl.col("Age").truediv(12).round(0).cast(pl.Int32),

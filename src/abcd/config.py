@@ -87,6 +87,7 @@ class Features(BaseModel):
     nt_y_st: Data
     ph_p_sds: Data
     su_p_pr: Data
+    mh_p_fhx: Data
     mri_y_dti_fa_fs_at: Data
     mri_y_rsfmr_cor_gp_gp: Data
     mri_y_tfmr_sst_csvcg_dsk: Data

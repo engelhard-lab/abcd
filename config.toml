@@ -4,11 +4,11 @@ regenerate = false
 tune = false
 predict = false
 evaluate = false
-shap = false
-plot = true
+shap = true
+plot = false
 tables = false
 verbose = false
-n_trials = 64
+n_trials = 32
 join_on = ["src_subject_id", "eventname"]
 target = "next_p_factor"
 
@@ -149,6 +149,19 @@ columns = []
 name = "Parental rules"
 respondent = "Parent"
 columns = []
+[features.mh_p_fhx]
+name = "Family mental health history"
+respondent = "Parent"
+columns = [
+    "famhx_4_p",
+    "fam_history_5_yes_no",
+    "fam_history_6_yes_no",
+    "fam_history_7_yes_no",
+    "fam_history_8_yes_no",
+    "fam_history_9_yes_no",
+    "fam_history_10_yes_no",
+    "fam_history_11_yes_no",
+]
 [features.mri_y_dti_fa_fs_at]
 name = "Diffusion tensor imaging"
 respondent = "Youth"

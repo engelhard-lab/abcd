@@ -22,5 +22,14 @@ def missingness_stats():
 
 
 if __name__ == "__main__":
-    p_factor_stats()
-    missingness_stats()
+    df = pl.read_csv("data/analytic/dataset.csv")
+    mean_num_observations = (
+        df.group_by("src_subject_id")
+        .agg(pl.col("next_p_factor").count())["next_p_factor"]
+        .mean()
+    )
+    print(mean_num_observations)
+    print((df["interview_age"] / 12).describe())
+
+    # p_factor_stats()
+    # missingness_stats()

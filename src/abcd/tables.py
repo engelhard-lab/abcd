@@ -3,69 +3,18 @@ import pandas as pd
 import numpy as np
 
 
-# def make_follow_up_table():
-#     df = pl.read_csv("data/analytic/dataset.csv").with_columns(
-#         pl.col("eventname").replace(EVENT_MAPPING_2)
-#     )
-#     labels = pl.read_csv("data/labels/factor_scores.csv").with_columns(
-#         pl.col("eventname").replace(EVENT_MAPPING_1)
-#     )
-#     features = pl.read_csv("data/analytic/features.csv").with_columns(
-#         pl.col("eventname").replace(EVENT_MAPPING_1)
-#     )
-#     df = (
-#         df.group_by("eventname")
-#         .len()
-#         .sort("eventname")
-#         .with_columns(pl.col("eventname").cast(pl.Utf8))
-#         .with_columns(pl.lit("Joined").alias("Dataset"))
-#     )
-#     labels = (
-#         labels.group_by("eventname")
-#         .len()
-#         .sort("eventname")
-#         .with_columns(pl.lit("p-factor").alias("Dataset"))
-#     )
-#     features = (
-#         features.group_by("eventname")
-#         .len()
-#         .sort("eventname")
-#         .with_columns(pl.lit("Predictors").alias("Dataset"))
-#     )
-#     df = (
-#         pl.concat([df, labels, features])
-#         .pivot(values="len", columns="Dataset", index="eventname")
-#         .rename({"eventname": "Year"})
-#     )
-#     df.select("Year", "p-factor", "Predictors", "Joined").drop_nulls().write_csv(
-#         "data/results/tables/follow_up.csv"
-#     )
-
-
-# def make_p_factor_group(df: pl.DataFrame, group_name: str, variable_name: str):
-#     return (
-#         df.group_by(group_name)
-#         .agg(
-#             (
-#                 pl.col("p_factor").mean().round(3).cast(pl.Utf8)
-#                 + " ± "
-#                 + pl.col("p_factor").std().mul(2).round(2).cast(pl.Utf8)
-#             ).alias("p-factor"),
-#             pl.col("src_subject_id").n_unique().alias("Count"),
-#         )
-#         .sort(group_name)
-#         .rename({group_name: "Group"})
-#         .with_columns(
-#             pl.lit(variable_name).alias("Variable"), pl.col("Group").cast(pl.Utf8)
-#         )
-#     )
-
-
 def quartile_counts_table():
-    data = pl.read_csv("data/metadata.csv").to_pandas()
+    data = (
+        pl.read_csv("data/metadata.csv")
+        .rename({"Measurement year": "Year"})
+        .with_columns(pl.col("Year").str.replace("Year ", ""))
+        .to_pandas()
+    )
+    print(data)
+    print(data["Age"].value_counts())
     data["Next quartile"] = data["Next quartile"] + 1
     quartile = data["Next quartile"]
-    variables = ["Sex", "Age", "Race", "Year"]
+    variables = ["Sex", "Age", "Race", "Year", "ADI quartile"]
     dfs = []
     for i, name in enumerate(variables):
         variable = data[name]
@@ -92,6 +41,7 @@ def quartile_counts_table():
         )
         df = df1 + df2
         df = df.reset_index()
+        df["Group"] = [int(i) if isinstance(i, float) else i for i in df["Group"]]
         df.insert(0, "Variable", name)
         if i == 0:
             df = df.reindex(np.roll(df.index, shift=1))
@@ -114,27 +64,26 @@ def quartile_counts_table():
 
 def make_metric_table(df: pl.DataFrame, groups: list[str]):
     df = (
-        (
-            (
-                df.group_by(groups + ["Next quartile"]).agg(
-                    pl.col("Prevalence").first(),
-                    pl.col("value").mean().round(2).cast(pl.String)
-                    + " ± "
-                    + pl.col("value").std(2).round(2).cast(pl.String),
-                )
+        df.group_by(groups + ["Next quartile"], maintain_order=True)
+        .agg(
+            pl.col("Prevalence").first(),
+            pl.col("value").mean().round(2).cast(pl.String)
+            + " ± "
+            + pl.col("value").std(2).round(2).cast(pl.String),
+        )
+        .with_columns(pl.col("Prevalence").round(2))
+        .with_columns(
+            pl.when(pl.col("Metric").eq("AP"))
+            .then(
+                pl.col("value").add(" (" + pl.col("Prevalence").cast(pl.String)) + ")"
             )
-            .with_columns(pl.col("Prevalence").round(2))
-            .with_columns(
-                pl.when(pl.col("Metric").eq("AP"))
-                .then(
-                    pl.col("value").add(" (" + pl.col("Prevalence").cast(pl.String))
-                    + ")"
-                )
-                .otherwise(pl.col("value"))
-            )
+            .otherwise(pl.col("value"))
         )
         .sort(groups + ["Next quartile"])
         .pivot(values="value", columns="Next quartile", index=groups)
+        .rename(
+            {"1": "Quartile 1", "2": "Quartile 2", "3": "Quartile 3", "4": "Quartile 4"}
+        )
     )
     return df
 
@@ -166,15 +115,27 @@ def shap_table():
 
 
 def make_tables():
-    df = pl.read_csv("data/results/metrics.csv")
-    # print(df)
-    df = make_metric_table(df, groups=["Metric", "Group"])
-    print(df)
-    # df.write_csv("data/results/tables/metrics.csv")
-    # print(df)
-    # df = pl.read_csv("data/results/demographic_metrics.csv")
-    # df = make_metric_table(df, groups=["Metric", "Variable", "Group"])
-    # df.write_csv("data/results/tables/demographic_metrics.csv")
+    df = pl.read_csv("data/results/metrics.csv").with_columns(
+        pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
+        pl.col("Group").str.replace("Year ", ""),
+        pl.col("Variable").str.replace("Measurement year", "Year"),
+    )
+    metrics_df = df.filter(pl.col("Variable").eq("Quartile subset"))
+    metrics_table = make_metric_table(df=metrics_df, groups=["Metric", "Group"])
+    print(metrics_table)
+    metrics_table.write_csv("data/results/tables/metrics.csv")
+    demographic_df = df.filter(pl.col("Variable").ne("Quartile subset"))
+    demographic_metrics = make_metric_table(
+        df=demographic_df, groups=["Metric", "Variable", "Group"]
+    ).sort(
+        [
+            "Metric",
+            "Variable",
+            pl.col("Group").cast(pl.Int32, strict=False),
+        ]
+    )
+    demographic_metrics.write_csv("data/results/tables/demographic_metrics.csv")
+    print(demographic_metrics)
     # print(df)
     # shap_table()
     # make_follow_up_table()
