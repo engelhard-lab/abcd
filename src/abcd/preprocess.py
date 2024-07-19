@@ -9,7 +9,7 @@ import polars as pl
 from polars.type_aliases import JoinStrategy
 import polars.selectors as cs
 
-from functools import reduce
+from functools import partial, reduce
 
 
 from abcd.config import Config
@@ -86,7 +86,7 @@ def pad_dataframe(df: pl.DataFrame):
     )
 
 
-def get_datasets(config: Config) -> list[pl.DataFrame]:
+def get_datasets(config: Config, exclude: list[str]) -> list[pl.DataFrame]:
     columns_to_drop = (
         "_nm",
         "_nt",
@@ -113,8 +113,10 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     )
     dfs = []
     for filename, metadata in config.features.model_dump().items():
+        if filename in exclude:
+            continue
         df = pl.read_csv(
-            source=config.filepaths.features / f"{filename}.csv",
+            source=config.filepaths.data.features / f"{filename}.csv",
             null_values=["", "null"],
             infer_schema_length=100_000,
         )
@@ -136,19 +138,22 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
-def make_labels(config: Config) -> pl.DataFrame:
-    df = pl.read_csv(
-        "data/labels/mh_p_cbcl.csv", columns=config.labels.cbcl_labels + config.join_on
-    ).sort(config.join_on)
+def transform_p_factors(df: pl.DataFrame, config: Config) -> pl.DataFrame:
     pipeline = make_pipeline(
+        StandardScaler(),
         KNNImputer(n_neighbors=config.preprocess.n_neighbors),
         FactorAnalysis(n_components=1, random_state=config.random_seed),
     )
-    values = df.select(config.labels.cbcl_labels).to_numpy()
-    values = pipeline.fit_transform(values)
-    p_factors = pl.Series(values)
+    values = df.select(config.labels.cbcl_labels)
+    df = df.with_columns(pipeline.fit_transform(values))
+    df = make_shifted_quartiles(df, config)
+    return df
+
+
+def make_shifted_quartiles(df: pl.DataFrame, config: Config):
+    p_factors = pl.Series(df)
     bin_labels = [str(i) for i in range(config.preprocess.n_quantiles)]
-    df = (
+    return (
         df.with_columns(
             p_factors.qcut(
                 quantiles=config.preprocess.n_quantiles,
@@ -168,12 +173,68 @@ def make_labels(config: Config) -> pl.DataFrame:
         .select(pl.exclude(config.labels.cbcl_labels))
         .pipe(pad_dataframe)
     )
+
+
+def make_labels(config: Config, analysis: str) -> pl.DataFrame:
+    df = pl.read_csv(
+        "data/labels/mh_p_cbcl.csv", columns=config.labels.cbcl_labels + config.join_on
+    ).sort(config.join_on)
+    pipeline = make_pipeline(
+        StandardScaler(),
+        KNNImputer(n_neighbors=config.preprocess.n_neighbors),
+        FactorAnalysis(n_components=1, random_state=config.random_seed),
+    )
+    if analysis == "by_year":
+        f = partial(transform_p_factors, config=config)
+        values = df.group_by("eventname", maintain_order=True).map_groups(f)
+    else:
+        values = df.select(config.labels.cbcl_labels).to_numpy()
+        values = pipeline.fit_transform(values)
+        df = make_shifted_quartiles(df=values, config=config)  # type: ignore
     return df
 
 
-def make_dataset(dfs: list[pl.DataFrame], config: Config):
+# TODO make generic and combine wiht make_splits
+def make_autoregressive_features(config: Config):
+    dfs = (
+        pl.read_csv(
+            "data/labels/mh_p_cbcl.csv",
+            columns=config.labels.cbcl_labels + config.join_on,
+        )
+        .sort(config.join_on)
+        .partition_by("src_subject_id", maintain_order=True)
+    )
+    X_train, X_val_test = train_test_split(
+        dfs,
+        train_size=config.preprocess.train_size,
+        random_state=config.random_seed,
+        shuffle=True,
+    )
+    X_val, X_test = train_test_split(
+        X_val_test, train_size=0.5, random_state=config.random_seed, shuffle=False
+    )
+    pipeline = make_pipeline(
+        StandardScaler(),
+        KNNImputer(n_neighbors=config.preprocess.n_neighbors),
+    )
+    splits = {"train": X_train, "val": X_val, "test": X_test}
+    for name, split in splits.items():
+        split = pl.concat(split)
+        if name == "train":
+            split.with_columns(
+                pipeline.fit_transform(split.select(config.labels.cbcl_labels))
+            )
+        else:
+            split.with_columns(
+                pipeline.transform(split.select(config.labels.cbcl_labels))
+            )
+        splits[name] = split
+    return splits
+
+
+def make_dataset(dfs: list[pl.DataFrame], config: Config, analysis: str):
     features = join_dataframes(dfs=dfs, join_on=config.join_on, how="outer_coalesce")
-    labels = make_labels(config=config)
+    labels = make_labels(config=config, analysis=analysis)
     df = (
         labels.join(other=features, on=config.join_on, how="inner")
         .with_columns(pl.col("eventname").replace(EVENT_MAPPING).cast(pl.Int32))
@@ -184,7 +245,7 @@ def make_dataset(dfs: list[pl.DataFrame], config: Config):
     return df.partition_by("src_subject_id", maintain_order=True)
 
 
-def make_metadata(df: pl.DataFrame):
+def make_subject_metadata(df: pl.DataFrame):
     rename_mapping = {
         "src_subject_id": "Subject ID",
         "eventname": "Year",
@@ -227,7 +288,7 @@ def make_splits(dfs: list[pl.DataFrame], config: Config):
     for name, split in splits.items():
         features: pl.DataFrame = pl.concat(split)  # type: ignore
         if name == "test":
-            test_metadata = make_metadata(features)
+            test_metadata = make_subject_metadata(features)
             test_metadata.write_csv("data/test_metadata.csv")
         labels = features.drop_in_place("next_p_factor")
         features.drop_in_place("p_factor")
@@ -241,28 +302,42 @@ def make_splits(dfs: list[pl.DataFrame], config: Config):
     return splits
 
 
-def generate_data(config: Config):
-    dfs = get_datasets(config=config)
-    make_variable_metadata(dfs=dfs, features=config.features)
-    dfs = make_dataset(dfs, config=config)
-    metadata = make_metadata(pl.concat(dfs))
-    metadata.write_csv("data/metadata.csv")
-    train, val, test = make_splits(dfs, config=config).values()
-    train.write_csv(config.filepaths.train)
-    val.write_csv(config.filepaths.val)
-    test.write_csv(config.filepaths.test)
+def generate_data(config: Config, analysis: str):
+    if analysis == "questionaires":
+        exclude = [
+            "mri_y_dti_fa_fs_at",
+            "mri_y_rsfmr_cor_gp_gp",
+            "mri_y_tfmr_sst_csvcg_dsk",
+            "mri_y_tfmr_mid_alrvn_dsk",
+            "mri_y_tfmr_nback_2b_dsk",
+        ]
+    else:
+        exclude = []
+    dfs = get_datasets(config=config, exclude=exclude)
+    if analysis == "with_brain":
+        make_variable_metadata(dfs=dfs, features=config.features)
+    dfs = make_dataset(dfs, config=config, analysis=analysis)
+    if analysis == "with_brain":
+        metadata = make_subject_metadata(pl.concat(dfs))
+        metadata.write_csv("data/metadata.csv")
+    if analysis == "cbcl":
+        train, val, test = make_autoregressive_features(config=config).values()
+    # FIXME: need same subjects in all splits
+    # elif analysis == "all":
+    #     train, val, test = make_splits(dfs, config=config).values()
+    else:
+        train, val, test = make_splits(dfs, config=config).values()
+    train.write_csv(config.filepaths.data.train)
+    val.write_csv(config.filepaths.data.val)
+    test.write_csv(config.filepaths.data.test)
     return train, val, test
 
 
-def get_data(config: Config):
-    filepaths = [
-        config.filepaths.train,
-        config.filepaths.val,
-        config.filepaths.test,
-    ]
+def get_data(config: Config, analysis: str):
+    filepaths = config.filepaths.data.model_dump().values()
     not_all_files_exist = not all([filepath.exists() for filepath in filepaths])
     if not_all_files_exist or config.regenerate:
-        train, val, test = generate_data(config=config)
+        train, val, test = generate_data(config=config, analysis=analysis)
     else:
         train, val, test = (pl.read_csv(filepath) for filepath in filepaths)
     return train, val, test

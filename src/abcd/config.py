@@ -2,31 +2,26 @@ from pydantic import BaseModel
 from pathlib import Path
 
 
-class Filepaths(BaseModel):
-    data: Path
+class Data(BaseModel):
     features: Path
     labels: Path
-    checkpoints: Path
-    study: Path
-    logs: Path
-    analytic: Path
     train: Path
     val: Path
     test: Path
-    predictions: Path
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        self.features = self.data / self.features
-        self.labels = self.data / self.labels
-        self.checkpoints = self.data / self.checkpoints
-        self.study = self.data / self.study
-        self.logs = self.data / self.logs
-        self.analytic = self.data / self.analytic
-        self.train = self.analytic / self.train
-        self.val = self.analytic / self.val
-        self.test = self.analytic / self.test
-        self.predictions = self.data / self.predictions
+
+class Results(BaseModel):
+    checkpoints: Path
+    study: Path
+    logs: Path
+    predictions: Path
+    tables: Path
+    plots: Path
+
+
+class Filepaths(BaseModel):
+    data: Data
+    results: Results
 
 
 class Preprocess(BaseModel):
@@ -59,7 +54,7 @@ class Model(BaseModel):
     dropout: dict[str, float]
 
 
-class Data(BaseModel):
+class Dataset(BaseModel):
     name: str
     respondent: str
     columns: list[str]
@@ -71,28 +66,28 @@ class Labels(BaseModel):
 
 
 class Features(BaseModel):
-    abcd_p_demo: Data
-    led_l_adi: Data
-    abcd_y_lt: Data
-    abcd_aces: Data
-    ce_p_fes: Data
-    ce_y_fes: Data
-    ce_p_nsc: Data
-    ce_y_nsc: Data
-    ce_y_pm: Data
-    ce_p_psb: Data
-    ce_y_psb: Data
-    ce_y_srpf: Data
-    nt_p_stq: Data
-    nt_y_st: Data
-    ph_p_sds: Data
-    su_p_pr: Data
-    mh_p_fhx: Data
-    mri_y_dti_fa_fs_at: Data
-    mri_y_rsfmr_cor_gp_gp: Data
-    mri_y_tfmr_sst_csvcg_dsk: Data
-    mri_y_tfmr_mid_alrvn_dsk: Data
-    mri_y_tfmr_nback_2b_dsk: Data
+    abcd_p_demo: Dataset
+    led_l_adi: Dataset
+    abcd_y_lt: Dataset
+    abcd_aces: Dataset
+    ce_p_fes: Dataset
+    ce_y_fes: Dataset
+    ce_p_nsc: Dataset
+    ce_y_nsc: Dataset
+    ce_y_pm: Dataset
+    ce_p_psb: Dataset
+    ce_y_psb: Dataset
+    ce_y_srpf: Dataset
+    nt_p_stq: Dataset
+    nt_y_st: Dataset
+    ph_p_sds: Dataset
+    su_p_pr: Dataset
+    mh_p_fhx: Dataset
+    mri_y_dti_fa_fs_at: Dataset
+    mri_y_rsfmr_cor_gp_gp: Dataset
+    mri_y_tfmr_sst_csvcg_dsk: Dataset
+    mri_y_tfmr_mid_alrvn_dsk: Dataset
+    mri_y_tfmr_nback_2b_dsk: Dataset
 
 
 class Config(BaseModel):
@@ -101,6 +96,7 @@ class Config(BaseModel):
     regenerate: bool
     predict: bool
     tune: bool
+    log: bool
     evaluate: bool
     shap: bool
     plot: bool
@@ -119,5 +115,18 @@ class Config(BaseModel):
     optimizer: Optimizer
     model: Model
 
-    def __init__(self, **data):
-        super().__init__(**data)
+
+def update_paths(config: Config, new_path: Path):
+    config.filepaths.data = Data(
+        **{
+            name: "data" / path
+            for name, path in config.filepaths.data.model_dump().items()
+        }
+    )
+    config.filepaths.results = Results(
+        **{
+            name: "results" / new_path / path
+            for name, path in config.filepaths.results.model_dump().items()
+        }
+    )
+    return config

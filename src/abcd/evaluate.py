@@ -192,11 +192,11 @@ def calc_sensitivity_and_specificity(df: pl.DataFrame):
 
 
 def evaluate_model(config: Config, model: Network):
-    if config.predict or not config.filepaths.predictions.is_file():
+    if config.predict or not config.filepaths.results.predictions.is_file():
         df = make_predictions(config=config, model=model)
-        df.write_csv(config.filepaths.predictions)
+        df.write_csv(config.filepaths.results.predictions)
     else:
-        df = pl.read_csv(config.filepaths.predictions)
+        df = pl.read_csv(config.filepaths.results.predictions)
     df = df.with_columns(
         pl.when(pl.col("Quartile").eq(3))
         .then(pl.lit("{4}"))

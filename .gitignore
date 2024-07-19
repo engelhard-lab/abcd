@@ -132,6 +132,7 @@ dmypy.json
 
 log.ipynb
 data/
+results/
 .vscode
 general_sentence_transformer.pt
 xgb.ipynb

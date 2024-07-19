@@ -130,7 +130,7 @@ class Network(LightningModule):
 
 def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
     checkpoint_callback = ModelCheckpoint(
-        dirpath=config.filepaths.checkpoints,
+        dirpath=config.filepaths.results.checkpoints,
         filename="{epoch}_{step}_{val_loss:.2f}",
         save_top_k=1,
         verbose=config.verbose,
@@ -138,7 +138,6 @@ def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
         mode="min",
         every_n_train_steps=config.logging.checkpoint_every_n_steps,
     )
-    logger = TensorBoardLogger(save_dir=config.filepaths.logs)
     early_stopping = EarlyStopping(monitor="val_loss", mode="min", patience=3)
     callbacks = [
         checkpoint_callback,
@@ -147,7 +146,9 @@ def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
     ]
     return (
         Trainer(
-            logger=logger,
+            logger=TensorBoardLogger(save_dir=config.filepaths.results.logs)
+            if config.log
+            else False,
             callbacks=callbacks,
             gradient_clip_val=config.training.gradient_clip,
             max_epochs=config.training.max_epochs,
@@ -229,5 +230,8 @@ def make_model(
             criterion=criterion,
         )
     return Network(
-        model=model, criterion=criterion, optimizer=optimizer, scheduler=scheduler
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        scheduler=scheduler,
     )

@@ -1,29 +1,34 @@
 fast_dev_run = false
 random_seed = 42
 regenerate = false
-tune = false
-predict = false
-evaluate = false
-shap = true
+tune = true
+log = false
+predict = true
+evaluate = true
+shap = false
 plot = false
 tables = false
 verbose = false
-n_trials = 32
+n_trials = 128
 join_on = ["src_subject_id", "eventname"]
 target = "next_p_factor"
 
 [filepaths]
-data = "data/"
+tables = "tables/"
+plots = "plots/"
+[filepaths.data]
 features = "features/"
 labels = "labels/p_factors.csv"
+train = "analytic/train.csv"
+val = "analytic/val.csv"
+test = "analytic/test.csv"
+[filepaths.results]
+metrics = "metrics/"
 checkpoints = "checkpoints/"
-study = "studies/study.pkl"
+study = "study.pkl"
 logs = "lightning_logs"
-analytic = "analytic/"
-train = "train.csv"
-val = "val.csv"
-test = "test.csv"
 predictions = "predictions.csv"
+
 
 [preprocess]
 n_neighbors = 5
@@ -49,7 +54,7 @@ high = 1e-2
 log = true
 
 [model]
-hidden_dim = [16, 32, 64, 128]
+hidden_dim = [32, 64, 128]
 [model.dropout]
 low = 0.0
 high = 0.75

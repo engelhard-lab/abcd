@@ -1,5 +1,4 @@
 from functools import partial
-from pathlib import Path
 import pickle
 from optuna import Trial, create_study
 from optuna.samplers import TPESampler
@@ -36,7 +35,7 @@ def objective(
             low=config.optimizer.weight_decay["low"],
             high=config.optimizer.weight_decay["high"],
         ),
-        "method": trial.suggest_categorical("method", ["rnn", "mlp"]),
+        "method": trial.suggest_categorical(name="method", choices=["rnn", "mlp"]),
     }
     model = make_model(
         input_dim=input_dim,
@@ -47,11 +46,11 @@ def objective(
     )
     trainer, checkpoint_callback = make_trainer(config)
     trainer.fit(model, datamodule=data_module)
-    cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
+    cleanup_checkpoints(config.filepaths.results.checkpoints, mode="min")
     return checkpoint_callback.best_model_score.item()  # type: ignore
 
 
-def tune(config: Config, data_module, input_dim: int, output_dim: int, filepath: Path):
+def tune(config: Config, data_module, input_dim: int, output_dim: int):
     sampler = TPESampler(
         seed=config.random_seed,
         multivariate=True,
@@ -70,7 +69,7 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int, filepath:
         output_dim=output_dim,
     )
     study.optimize(func=objective_function, n_trials=config.n_trials)
-    with open(filepath, "wb") as f:
+    with open(config.filepaths.results.study, "wb") as f:
         pickle.dump(study, f)
-    cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
+    cleanup_checkpoints(config.filepaths.results.checkpoints, mode="min")
     return study
