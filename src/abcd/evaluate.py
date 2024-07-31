@@ -19,7 +19,7 @@ from multiprocessing import cpu_count
 from abcd.config import Config
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.model import Network, make_trainer
-from abcd.preprocess import get_data
+from abcd.preprocess import get_splits
 
 REVERSE_EVENT_MAPPING = {
     0: "Baseline",
@@ -31,9 +31,11 @@ REVERSE_EVENT_MAPPING = {
 OUTPUT_COLUMNS = ["1", "2", "3", "4"]
 
 
-def make_predictions(config: Config, model: Network):
+def make_predictions(config: Config, model: Network, analysis: str):
     trainer, _ = make_trainer(config)
-    _, _, test = get_data(config)
+    # df = pl.read_csv(config.filepaths.data.analytic.dataset)
+    # _, _, test = get_splits(df=df, config=config, analysis=analysis)
+    test = pl.read_csv(config.filepaths.data.analytic.test)
     data_module = ABCDDataModule(
         train=_,
         val=_,
@@ -45,7 +47,7 @@ def make_predictions(config: Config, model: Network):
     predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
     outputs, _ = zip(*predictions)
     outputs = torch.concat(outputs).permute(0, 2, 1).contiguous().flatten(0, 1)
-    metadata = pl.read_csv("data/test_metadata.csv")
+    metadata = pl.read_csv("data/metadata.csv")
     outputs = pl.DataFrame(outputs.cpu().numpy(), schema=OUTPUT_COLUMNS)
     return pl.concat([metadata, outputs], how="horizontal").drop_nulls("Next quartile")
 
@@ -140,30 +142,6 @@ def make_prevalence(df: pl.DataFrame):
             pl.lit([0, 1]).alias("x"),
         )
     )
-    # print(df)
-    # df = df.with_columns(
-    #     pl.col("Next quartile").count().over("Next quartile").alias("count")
-    # )
-    # df = df.with_columns(pl.count().over(["Variable", "Group"]).alias("n"))
-    # print(
-    #     df.filter(pl.col("Variable").eq("Quartile subset"))
-    #     .group_by(["Variable", "Group"])
-    #     .count()
-    # )
-    # df = df.with_columns(pl.col("n").truediv("count").alias("Prevalence"))
-    # df = (
-    #     df.group_by(["Next quartile", "Variable", "Group"])
-    #     .count()
-    #     # .with_columns(
-    #     #     pl.col("count").truediv(pl.lit(n)).alias("y"),
-    #     #     pl.col("Next quartile").add(1).cast(pl.String),
-    #     #     pl.lit("PR").alias("Metric"),
-    #     #     pl.lit("Baseline").alias("Curve"),
-    #     #     pl.lit([0, 1]).alias("x"),
-    #     # )
-    #     # .drop("count")
-    #     .drop_nulls()
-    # )
     return df
 
 
@@ -178,7 +156,9 @@ def make_baselines(prevalence: pl.DataFrame):
 
 
 def calc_sensitivity_and_specificity(df: pl.DataFrame):
-    df = df.filter(pl.col("Quartile subset").eq("{1,2,3}"))
+    df = df.filter(
+        pl.col("Variable").eq("Quartile subset") & pl.col("Group").eq("{1,2,3}")
+    )
     outputs, labels = get_predictions(df=df)
     specificity = MulticlassSpecificityAtSensitivity(
         num_classes=outputs.shape[-1], min_sensitivity=0.5
@@ -191,12 +171,12 @@ def calc_sensitivity_and_specificity(df: pl.DataFrame):
     return spec, sens
 
 
-def evaluate_model(config: Config, model: Network):
-    if config.predict or not config.filepaths.results.predictions.is_file():
-        df = make_predictions(config=config, model=model)
-        df.write_csv(config.filepaths.results.predictions)
+def evaluate_model(config: Config, model: Network, analysis: str):
+    if config.predict or not config.filepaths.data.results.predictions.is_file():
+        df = make_predictions(config=config, model=model, analysis=analysis)
+        df.write_csv(config.filepaths.data.results.predictions)
     else:
-        df = pl.read_csv(config.filepaths.results.predictions)
+        df = pl.read_csv(config.filepaths.data.results.predictions)
     df = df.with_columns(
         pl.when(pl.col("Quartile").eq(3))
         .then(pl.lit("{4}"))
@@ -221,7 +201,6 @@ def evaluate_model(config: Config, model: Network):
         pl.lit("{1,2,3,4}").alias("Group")
     )
     df = pl.concat([df_all, df]).drop_nulls("Group")
-    # n = df_all.shape[0]
     prevalence = make_prevalence(df=df)
     grouped_df = df.group_by("Variable", "Group", maintain_order=True)
     metrics = grouped_df.map_groups(make_metrics)
@@ -229,7 +208,7 @@ def evaluate_model(config: Config, model: Network):
         prevalence.select(["Variable", "Group", "Next quartile", "y"]),
         on=["Variable", "Group", "Next quartile"],
     ).rename({"y": "Prevalence"})
-    metrics.write_csv("data/results/metrics.csv")
+    metrics.write_csv(config.filepaths.data.results.metrics / "metrics.csv")
     pr_curve = grouped_df.map_groups(
         partial(make_curve, curve=precision_recall_curve, name="PR")
     )
@@ -239,7 +218,7 @@ def evaluate_model(config: Config, model: Network):
         [pr_curve, roc_curve, baselines],
         how="diagonal_relaxed",
     ).select(["Metric", "Curve", "Variable", "Group", "Next quartile", "x", "y"])
-    curves.write_csv("data/results/curves.csv")
+    curves.write_csv(config.filepaths.data.results.metrics / "curves.csv")
 
     spec, sens = calc_sensitivity_and_specificity(df=df)
     print(

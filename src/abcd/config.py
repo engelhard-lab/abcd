@@ -2,26 +2,36 @@ from pydantic import BaseModel
 from pathlib import Path
 
 
-class Data(BaseModel):
+class Raw(BaseModel):
+    dataset: Path
     features: Path
-    labels: Path
+
+
+class Analytic(BaseModel):
     train: Path
     val: Path
     test: Path
 
 
 class Results(BaseModel):
+    metrics: Path
     checkpoints: Path
     study: Path
     logs: Path
     predictions: Path
-    tables: Path
-    plots: Path
+
+
+class Data(BaseModel):
+    raw: Raw
+    analytic: Analytic
+    results: Results
+    dataset: Path
 
 
 class Filepaths(BaseModel):
+    tables: Path
+    plots: Path
     data: Data
-    results: Results
 
 
 class Preprocess(BaseModel):
@@ -60,12 +70,8 @@ class Dataset(BaseModel):
     columns: list[str]
 
 
-class Labels(BaseModel):
-    p_factor: str
-    cbcl_labels: list[str]
-
-
 class Features(BaseModel):
+    mh_p_cbcl: Dataset
     abcd_p_demo: Dataset
     led_l_adi: Dataset
     abcd_y_lt: Dataset
@@ -108,7 +114,6 @@ class Config(BaseModel):
     target: str
     filepaths: Filepaths
     preprocess: Preprocess
-    labels: Labels
     features: Features
     training: Training
     logging: Logging
@@ -117,16 +122,16 @@ class Config(BaseModel):
 
 
 def update_paths(config: Config, new_path: Path):
-    config.filepaths.data = Data(
-        **{
-            name: "data" / path
-            for name, path in config.filepaths.data.model_dump().items()
-        }
-    )
-    config.filepaths.results = Results(
-        **{
-            name: "results" / new_path / path
-            for name, path in config.filepaths.results.model_dump().items()
-        }
-    )
+    analytic = config.filepaths.data.analytic.model_dump()
+    for name, path in analytic.items():
+        new_filepath = new_path / path
+        new_filepath.parent.mkdir(parents=True, exist_ok=True)
+        analytic[name] = new_filepath
+    config.filepaths.data.analytic = Analytic(**analytic)
+    results = config.filepaths.data.results.model_dump()
+    for name, path in results.items():
+        new_filepath = new_path / path
+        new_filepath.parent.mkdir(parents=True, exist_ok=True)
+        results[name] = new_filepath
+    config.filepaths.data.results = Results(**results)
     return config

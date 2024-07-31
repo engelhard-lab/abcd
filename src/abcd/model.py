@@ -130,7 +130,7 @@ class Network(LightningModule):
 
 def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
     checkpoint_callback = ModelCheckpoint(
-        dirpath=config.filepaths.results.checkpoints,
+        dirpath=config.filepaths.data.results.checkpoints,
         filename="{epoch}_{step}_{val_loss:.2f}",
         save_top_k=1,
         verbose=config.verbose,
@@ -146,7 +146,7 @@ def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
     ]
     return (
         Trainer(
-            logger=TensorBoardLogger(save_dir=config.filepaths.results.logs)
+            logger=TensorBoardLogger(save_dir=config.filepaths.data.results.logs)
             if config.log
             else False,
             callbacks=callbacks,

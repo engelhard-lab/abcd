@@ -10,66 +10,93 @@ import polars as pl
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
 from abcd.importance import make_shap
-from abcd.preprocess import get_data
+from abcd.metadata import make_variable_metadata
+from abcd.preprocess import (
+    get_datasets,
+    get_splits,
+    make_dataset,
+    make_subject_metadata,
+)
 from abcd.config import Config, update_paths
-from abcd.model import make_model
+from abcd.model import make_model, make_trainer
 from abcd.plots import plot
 from abcd.tables import make_tables
 from abcd.tune import tune
+from abcd.utils import cleanup_checkpoints
 
-analyses = ["with_brain", "questionaires", "cbcl", "all", "by_year"]
+analyses = ["symptoms", "with_brain", "without_brain", "symptom", "all", "by_year"]
+
+
+# def transform_metadata(splits, features, labels, label_pipeline):
+#     for name, split in splits.items():
+#         groups = split.drop_in_place("src_subject_id")
+#         X = split.select(features)
+#         y = split.select(labels)
+#         if name == "train":
+#             y = label_pipeline.fit_transform(y)
+#         else:
+#             y = label_pipeline.transform(y)
+#         splits[name] = post_process(X=X, y=y, groups=groups)
+#     return splits
 
 
 def main():
     pl.Config(tbl_cols=14)
     set_config(transform_output="polars")
-
-    for analysis in analyses:
-        pass
-
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
-
-    update_paths(config, Path("example"))
-    seed_everything(config.random_seed)
-
-    train, val, test = get_data(config=config, analysis=analysis)
-    data_module = ABCDDataModule(
-        train=train,
-        val=val,
-        test=test,
-        batch_size=config.training.batch_size,
-        num_workers=cpu_count(),
-        dataset_class=RNNDataset,
-    )
-    input_dim = train.shape[1] - 2  # -2 for src_subject_id and label
-    if config.tune:
-        study = tune(
-            config=config,
-            data_module=data_module,
+    datasets = get_datasets(config=config)
+    make_variable_metadata(dfs=datasets, features=config.features)
+    df = make_dataset(dfs=datasets, config=config)
+    metadata = make_subject_metadata(config=config, df=df)
+    metadata.write_csv("data/metadata.csv")
+    df.write_csv(config.filepaths.data.dataset)
+    df = df.drop("race_ethnicity")
+    for analysis in analyses:
+        config = config.model_copy()
+        analysis_path = "data/analyses" / Path(analysis)
+        update_paths(config, new_path=analysis_path)
+        seed_everything(config.random_seed)
+        train, val, test = get_splits(df=df, config=config, analysis=analysis)
+        data_module = ABCDDataModule(
+            train=train,
+            val=val,
+            test=test,
+            batch_size=config.training.batch_size,
+            num_workers=cpu_count(),
+            dataset_class=RNNDataset,
+        )
+        input_dim = next(iter(data_module.train_dataloader()))[0].shape[1]
+        if config.tune:
+            study = tune(
+                config=config,
+                data_module=data_module,
+                input_dim=input_dim,
+                output_dim=config.preprocess.n_quantiles,
+            )
+        else:
+            with open(config.filepaths.data.results.study, "rb") as f:
+                study: Study = pickle.load(f)
+        print(study.best_params)
+        model = make_model(
             input_dim=input_dim,
             output_dim=config.preprocess.n_quantiles,
+            momentum=config.optimizer.momentum,
+            nesterov=config.optimizer.nesterov,
+            checkpoints=config.filepaths.data.results.checkpoints,
+            **study.best_params,
         )
-    else:
-        with open(config.filepaths.results.study, "rb") as f:
-            study: Study = pickle.load(f)
-    print(study.best_params)
-    model = make_model(
-        input_dim=input_dim,
-        output_dim=config.preprocess.n_quantiles,
-        momentum=config.optimizer.momentum,
-        nesterov=config.optimizer.nesterov,
-        checkpoints=config.filepaths.results.checkpoints,
-        **study.best_params,
-    )
-    if config.evaluate:
-        evaluate_model(config=config, model=model)
+        trainer, checkpoint_dir = make_trainer(config=config)
+        trainer.fit(model=model, datamodule=data_module)
+        cleanup_checkpoints(checkpoint_dir=checkpoint_dir, mode="min")
+        if config.evaluate:
+            evaluate_model(config=config, model=model, analysis=analysis)
     if config.shap:
         make_shap(train, model=model, data_module=data_module)
     if config.tables:
         make_tables()
     if config.plot:
-        plot(config=config)  # , dataloader=data_module.test_dataloader()
+        plot(config=config)
 
 
 if __name__ == "__main__":

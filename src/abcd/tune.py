@@ -46,7 +46,7 @@ def objective(
     )
     trainer, checkpoint_callback = make_trainer(config)
     trainer.fit(model, datamodule=data_module)
-    cleanup_checkpoints(config.filepaths.results.checkpoints, mode="min")
+    cleanup_checkpoints(config.filepaths.data.results.checkpoints, mode="min")
     return checkpoint_callback.best_model_score.item()  # type: ignore
 
 
@@ -69,7 +69,7 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int):
         output_dim=output_dim,
     )
     study.optimize(func=objective_function, n_trials=config.n_trials)
-    with open(config.filepaths.results.study, "wb") as f:
+    with open(config.filepaths.data.results.study, "wb") as f:
         pickle.dump(study, f)
-    cleanup_checkpoints(config.filepaths.results.checkpoints, mode="min")
+    cleanup_checkpoints(config.filepaths.data.results.checkpoints, mode="min")
     return study

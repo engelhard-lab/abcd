@@ -397,9 +397,48 @@ def cbcl_distributions(config: Config):
     )
 
 
+def metric_comparison():
+    df = pl.read_csv(
+        "data/cbcl/results/metrics/metrics.csv"
+    ).with_columns(  # "data/results/metrics.csv"
+        pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
+        pl.col("Group").str.replace("Year ", ""),
+        pl.col("Variable").str.replace("Measurement year", "Year"),
+    )
+    metrics_df1 = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
+        pl.lit("Autoregressive").alias("Feature set")
+    )
+    # print(metrics_table+)
+    df = pl.read_csv("data/results/metrics.csv").with_columns(  #
+        pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
+        pl.col("Group").str.replace("Year ", ""),
+        pl.col("Variable").str.replace("Measurement year", "Year"),
+    )
+    metrics_df2 = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
+        pl.lit("Questions + brain").alias("Feature set")
+    )
+    metrics_df = pl.concat([metrics_df1, metrics_df2]).select(
+        pl.col("Feature set"), pl.exclude("Feature set")
+    )
+    print(metrics_df)
+    g = sns.catplot(
+        data=metrics_df.to_pandas(),
+        x="Group",
+        y="value",
+        hue="Feature set",
+        col="Next quartile",
+        row="Metric",
+        kind="bar",
+    )
+    g.set_titles("{row_name}: Q{col_name}")
+    plt.show()
+
+
 def plot(config):
     sns.set_theme(style="darkgrid", palette="deep", font_scale=2.0)
     sns.set_context("paper", font_scale=2.0)
+
+    metric_comparison()
 
     # cbcl_distributions(config=config)
     # quartile_curves()
@@ -413,10 +452,10 @@ def plot(config):
     # X, _ = next(test_dataloader)
     # X = pd.DataFrame(X.mean(dim=1), columns=feature_names)  # .view(-1, X.shape[2])
 
-    metadata = pl.read_csv("data/variables.csv")
-    shap_coefs = pl.read_csv("data/results/shap_coefs.csv")
+    # metadata = pl.read_csv("data/variables.csv")
+    # shap_coefs = pl.read_csv("data/results/shap_coefs.csv")
 
-    shap_plot(shap_coefs=shap_coefs, metadata=metadata, textwrap_width=75)
+    # shap_plot(shap_coefs=shap_coefs, metadata=metadata, textwrap_width=75)
     # shap_plot(
     #     shap_coefs=shap_coefs,
     #     metadata=metadata,
@@ -424,14 +463,14 @@ def plot(config):
     #     textwrap_width=50,
     # )
 
-    column_mapping = dict(zip(metadata["variable"], metadata["dataset"]))
-    shap_values = pl.read_csv("data/results/shap_values.csv")
+    # column_mapping = dict(zip(metadata["variable"], metadata["dataset"]))
+    # shap_values = pl.read_csv("data/results/shap_values.csv")
     # male_shap_values = format_shap_values(shap_values_list, X, sex="Male")
     # shap_values_list = torch_load("data/results/shap_values_female.pt")
     # female_shap_values = format_shap_values(shap_values_list, X, sex="Female")
     # shap_values = pl.concat([male_shap_values, female_shap_values])
 
-    grouped_shap_plot(shap_values=shap_values, column_mapping=column_mapping)
+    # grouped_shap_plot(shap_values=shap_values, column_mapping=column_mapping)
     # sex_shap_plot(df=shap_values, column_mapping=column_mapping)
 
     # names = [data["name"] for data in config.features.model_dump().values()]

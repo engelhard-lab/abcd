@@ -115,27 +115,43 @@ def shap_table():
 
 
 def make_tables():
-    df = pl.read_csv("data/results/metrics.csv").with_columns(
+    df = pl.read_csv(
+        "data/cbcl/results/metrics/metrics.csv"
+    ).with_columns(  # "data/results/metrics.csv"
         pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
         pl.col("Group").str.replace("Year ", ""),
         pl.col("Variable").str.replace("Measurement year", "Year"),
     )
     metrics_df = df.filter(pl.col("Variable").eq("Quartile subset"))
-    metrics_table = make_metric_table(df=metrics_df, groups=["Metric", "Group"])
-    print(metrics_table)
-    metrics_table.write_csv("data/results/tables/metrics.csv")
-    demographic_df = df.filter(pl.col("Variable").ne("Quartile subset"))
-    demographic_metrics = make_metric_table(
-        df=demographic_df, groups=["Metric", "Variable", "Group"]
-    ).sort(
-        [
-            "Metric",
-            "Variable",
-            pl.col("Group").cast(pl.Int32, strict=False),
-        ]
+    metrics_table_1 = make_metric_table(
+        df=metrics_df, groups=["Metric", "Group"]
+    ).with_columns(pl.lit("Questions + brain").alias("Feature set"))
+    # print(metrics_table+)
+    df = pl.read_csv("data/results/metrics.csv").with_columns(  #
+        pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
+        pl.col("Group").str.replace("Year ", ""),
+        pl.col("Variable").str.replace("Measurement year", "Year"),
     )
-    demographic_metrics.write_csv("data/results/tables/demographic_metrics.csv")
-    print(demographic_metrics)
+    metrics_df = df.filter(pl.col("Variable").eq("Quartile subset"))
+    metrics_table_2 = make_metric_table(
+        df=metrics_df, groups=["Metric", "Group"]
+    ).with_columns(pl.lit("Autoregressive").alias("Feature set"))
+    metrics_table = pl.concat([metrics_table_1, metrics_table_2]).select(
+        pl.col("Feature set"), pl.exclude("Feature set")
+    )
+    metrics_table.write_csv("data/results/tables/metrics_temp.csv")
+    # demographic_df = df.filter(pl.col("Variable").ne("Quartile subset"))
+    # demographic_metrics = make_metric_table(
+    #     df=demographic_df, groups=["Metric", "Variable", "Group"]
+    # ).sort(
+    #     [
+    #         "Metric",
+    #         "Variable",
+    #         pl.col("Group").cast(pl.Int32, strict=False),
+    #     ]
+    # )
+    # demographic_metrics.write_csv("data/results/tables/demographic_metrics.csv")
+    # print(demographic_metrics)
     # print(df)
     # shap_table()
     # make_follow_up_table()

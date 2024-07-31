@@ -1,33 +1,36 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = false
-tune = true
+regenerate = true
+tune = false
 log = false
-predict = true
-evaluate = true
+predict = false
+evaluate = false
 shap = false
 plot = false
 tables = false
 verbose = false
-n_trials = 128
+n_trials = 16
 join_on = ["src_subject_id", "eventname"]
 target = "next_p_factor"
 
+
 [filepaths]
-tables = "tables/"
-plots = "plots/"
+tables = "data/tables/"
+plots = "data/plots/"
 [filepaths.data]
-features = "features/"
-labels = "labels/p_factors.csv"
+[filepaths.data.raw]
+dataset = "data/raw/dataset.csv"
+features = "data/raw/features/"
+[filepaths.data.analytic]
 train = "analytic/train.csv"
 val = "analytic/val.csv"
 test = "analytic/test.csv"
-[filepaths.results]
-metrics = "metrics/"
-checkpoints = "checkpoints/"
-study = "study.pkl"
-logs = "lightning_logs"
-predictions = "predictions.csv"
+[filepaths.data.results]
+metrics = "results/metrics/"
+checkpoints = "results/checkpoints/"
+study = "results/study.pkl"
+logs = "results/lightning_logs"
+predictions = "results/predictions.csv"
 
 
 [preprocess]
@@ -66,9 +69,11 @@ high = 5
 checkpoint_every_n_steps = 1
 log_every_n_steps = 1
 
-[labels]
-p_factor = "p_factor"
-cbcl_labels = [
+[features]
+[features.mh_p_cbcl]
+name = "Child Behavior Checklist (CBCL)"
+respondent = "Parent"
+columns = [
     "cbcl_scr_syn_anxdep_t",
     "cbcl_scr_syn_withdep_t",
     "cbcl_scr_syn_somatic_t",
@@ -78,8 +83,6 @@ cbcl_labels = [
     "cbcl_scr_syn_rulebreak_t",
     "cbcl_scr_syn_aggressive_t",
 ]
-
-[features]
 [features.abcd_p_demo]
 name = "Demographics"
 respondent = "Parent"
