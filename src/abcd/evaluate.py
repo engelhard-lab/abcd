@@ -36,9 +36,15 @@ def make_predictions(config: Config, model: Network, data_module: ABCDDataModule
     outputs, labels = zip(*predictions)
     labels = torch.concat(labels).flatten()
     outputs = torch.concat(outputs).permute(0, 2, 1).flatten(0, 1)
+    labels = labels.flatten()
+    outputs = outputs.flatten(0, 1)  # .permute(0, 2, 1)
+    valid_mask = ~torch.isnan(labels)
+    outputs = outputs[valid_mask]
+    labels = labels[valid_mask]
     metadata = pl.read_csv(config.filepaths.data.raw.metadata)
+    test_metadata = metadata.filter(pl.col("Split").eq("test"))
     outputs = pl.DataFrame(outputs.cpu().numpy(), schema=OUTPUT_COLUMNS)
-    return pl.concat([metadata, outputs], how="horizontal").drop_nulls(
+    return pl.concat([test_metadata, outputs], how="horizontal").drop_nulls(
         "Quartile at t+1"
     )
 
@@ -46,6 +52,9 @@ def make_predictions(config: Config, model: Network, data_module: ABCDDataModule
 def get_predictions(df: pl.DataFrame):
     outputs = torch.tensor(df.select(OUTPUT_COLUMNS).to_numpy()).float()
     labels = torch.tensor(df["Quartile at t+1"].to_numpy()).long()
+    is_not_nan = ~torch.isnan(labels)
+    outputs = outputs[is_not_nan]
+    labels = labels[is_not_nan].long()
     return outputs, labels
 
 

@@ -2,7 +2,7 @@ fast_dev_run = false
 random_seed = 42
 regenerate = false
 tune = true
-refit_best = false
+refit_best = true
 log = false
 predict = true
 evaluate = true
@@ -10,7 +10,7 @@ shap = false
 plot = false
 tables = false
 verbose = false
-n_trials = 2
+n_trials = 16
 join_on = ["src_subject_id", "eventname"]
 target = "next_p_factor"
 
@@ -58,12 +58,12 @@ low = 1e-4
 high = 1e-2
 log = true
 [optimizer.weight_decay]
-low = 1e-7
+low = 1e-8
 high = 1e-2
 log = true
 
 [model]
-hidden_dim = [16, 32, 64]
+hidden_dim = [32, 64, 128]
 [model.dropout]
 low = 0.0
 high = 0.75

@@ -144,8 +144,12 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
-def make_subject_metadata(splits: dict) -> pl.DataFrame:
-    df: pl.DataFrame = pl.concat(list(splits.values()))
+def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
+    dfs = [
+        split.clone().with_columns(pl.lit(name).alias("Split"))
+        for name, split in splits.items()
+    ]
+    df: pl.DataFrame = pl.concat(dfs)
     rename_mapping = {
         "src_subject_id": "Subject ID",
         "eventname": "Time",
@@ -162,7 +166,7 @@ def make_subject_metadata(splits: dict) -> pl.DataFrame:
     }
     return (
         df.rename(rename_mapping)
-        .select(rename_mapping.values())
+        .select(["Split"] + list(rename_mapping.values()))
         .with_columns(
             pl.col("Sex").replace(SEX_MAPPING),
             pl.col("Race").replace(RACE_MAPPING),
@@ -293,16 +297,16 @@ def add_labels(splits: dict[str, pl.DataFrame], config: Config):
             ~pl.all_horizontal(pl.col(config.features.mh_p_cbcl.columns).is_null())
         )
         split = impute_nulls(df=split)
-        # split = transform_by_group(
-        #     name=name,
-        #     split=split,
-        #     columns=config.features.mh_p_cbcl.columns,
-        #     groups="eventname",
-        #     pipeline=make_label_pipeline("p_factor_by_year", config),
-        #     pipelines=pipelines,
-        # ).with_columns(
-        #     shift_quartile(p_factor="p_factor_by_year", label="label_by_year")
-        # )
+        split = transform_by_group(
+            name=name,
+            split=split,
+            columns=config.features.mh_p_cbcl.columns,
+            groups="eventname",
+            pipeline=make_label_pipeline("p_factor_by_year", config),
+            pipelines=pipelines,
+        ).with_columns(
+            shift_quartile(p_factor="p_factor_by_year", label="label_by_year")
+        )
         split = (
             transform_split(
                 name=name,

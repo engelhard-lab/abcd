@@ -59,12 +59,13 @@ def main():
                 study: Study = pickle.load(f)
         print(study.best_params)
         print(config.filepaths.data.results.checkpoints)
+        print(config.filepaths.data.results.study)
         model = make_model(
             input_dim=input_dim,
             output_dim=config.preprocess.n_quantiles,
             momentum=config.optimizer.momentum,
             nesterov=config.optimizer.nesterov,
-            checkpoints=config.filepaths.data.results.checkpoints,
+            checkpoints=None,  # , config.filepaths.data.results.checkpoints,
             **study.best_params,
         )
         if config.refit_best:

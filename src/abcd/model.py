@@ -40,11 +40,12 @@ class RNN(nn.Module):
 
 def make_metrics(step, loss, outputs, labels) -> dict:
     metrics = {f"{step}_loss": loss}
-    outputs = outputs.permute(0, 2, 1).flatten(0, 1)
-    labels = labels.flatten()
-    is_not_nan = ~isnan(labels)
-    outputs = outputs[is_not_nan]
-    labels = labels[is_not_nan].long()
+    # outputs = outputs.permute(0, 2, 1).flatten(0, 1)
+    # labels = labels.flatten()
+    # is_not_nan = ~isnan(labels)
+    # outputs = outputs[is_not_nan]
+    # labels = labels[is_not_nan].long()
+    labels = labels.long()
     if step == "val":
         auroc_score = auroc(
             outputs,
@@ -102,11 +103,13 @@ class Network(LightningModule):
     def step(self, step: str, batch):
         inputs, labels = batch
         outputs = self(inputs)
-        labels = labels.squeeze(-1)
-        # valid_mask = ~isnan(labels)
-        # outputs = outputs[valid_mask]
-        # labels = labels[valid_mask].long()
-        loss = self.criterion(outputs, labels).nanmean()
+        # labels = labels  # .squeeze(-1)
+        labels = labels.flatten()
+        outputs = outputs.flatten(0, 1)  # .permute(0, 2, 1)
+        valid_mask = ~isnan(labels)
+        outputs = outputs[valid_mask]
+        labels = labels[valid_mask]
+        loss = self.criterion(outputs, labels)
         metrics = make_metrics(step, loss, outputs, labels)
         self.log_dict(metrics, prog_bar=True)
         return loss
@@ -218,7 +221,7 @@ def make_model(
         num_layers=num_layers,
         dropout=dropout,
     )
-    criterion = nn.CrossEntropyLoss()  # reduction="none"
+    criterion = nn.CrossEntropyLoss()
     optimizer = SGD(
         model.parameters(),
         lr=lr,
