@@ -1,5 +1,5 @@
 from pathlib import Path
-from torch import nn
+from torch import nn, isnan
 from torch.optim import SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision.ops import MLP
@@ -40,7 +40,11 @@ class RNN(nn.Module):
 
 def make_metrics(step, loss, outputs, labels) -> dict:
     metrics = {f"{step}_loss": loss}
-    labels = labels.long()
+    outputs = outputs.permute(0, 2, 1).flatten(0, 1)
+    labels = labels.flatten()
+    is_not_nan = ~isnan(labels)
+    outputs = outputs[is_not_nan]
+    labels = labels[is_not_nan].long()
     if step == "val":
         auroc_score = auroc(
             outputs,
@@ -99,6 +103,9 @@ class Network(LightningModule):
         inputs, labels = batch
         outputs = self(inputs)
         labels = labels.squeeze(-1)
+        # valid_mask = ~isnan(labels)
+        # outputs = outputs[valid_mask]
+        # labels = labels[valid_mask].long()
         loss = self.criterion(outputs, labels).nanmean()
         metrics = make_metrics(step, loss, outputs, labels)
         self.log_dict(metrics, prog_bar=True)
@@ -211,7 +218,7 @@ def make_model(
         num_layers=num_layers,
         dropout=dropout,
     )
-    criterion = nn.CrossEntropyLoss(reduction="none")
+    criterion = nn.CrossEntropyLoss()  # reduction="none"
     optimizer = SGD(
         model.parameters(),
         lr=lr,

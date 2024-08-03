@@ -1,15 +1,16 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = true
-tune = false
+regenerate = false
+tune = true
+refit_best = false
 log = false
-predict = false
-evaluate = false
+predict = true
+evaluate = true
 shap = false
 plot = false
 tables = false
 verbose = false
-n_trials = 16
+n_trials = 2
 join_on = ["src_subject_id", "eventname"]
 target = "next_p_factor"
 
@@ -20,7 +21,12 @@ plots = "data/plots/"
 [filepaths.data]
 [filepaths.data.raw]
 dataset = "data/raw/dataset.csv"
+metadata = "data/raw/metadata.csv"
 features = "data/raw/features/"
+[filepaths.data.raw.splits]
+train = "data/raw/train.csv"
+val = "data/raw/val.csv"
+test = "data/raw/test.csv"
 [filepaths.data.analytic]
 train = "analytic/train.csv"
 val = "analytic/val.csv"
@@ -40,7 +46,7 @@ train_size = 0.8
 
 
 [training]
-batch_size = 512
+batch_size = 1024
 max_epochs = 200
 gradient_clip = 1.0
 
@@ -52,18 +58,18 @@ low = 1e-4
 high = 1e-2
 log = true
 [optimizer.weight_decay]
-low = 1e-8
+low = 1e-7
 high = 1e-2
 log = true
 
 [model]
-hidden_dim = [32, 64, 128]
+hidden_dim = [16, 32, 64]
 [model.dropout]
 low = 0.0
 high = 0.75
 [model.num_layers]
 low = 1
-high = 5
+high = 4
 
 [logging]
 checkpoint_every_n_steps = 1

@@ -1,16 +1,19 @@
 from pydantic import BaseModel
 from pathlib import Path
+from copy import deepcopy
+
+
+class Splits(BaseModel):
+    train: Path
+    val: Path
+    test: Path
 
 
 class Raw(BaseModel):
     dataset: Path
+    metadata: Path
     features: Path
-
-
-class Analytic(BaseModel):
-    train: Path
-    val: Path
-    test: Path
+    splits: Splits
 
 
 class Results(BaseModel):
@@ -23,9 +26,8 @@ class Results(BaseModel):
 
 class Data(BaseModel):
     raw: Raw
-    analytic: Analytic
+    analytic: Splits
     results: Results
-    dataset: Path
 
 
 class Filepaths(BaseModel):
@@ -102,6 +104,7 @@ class Config(BaseModel):
     regenerate: bool
     predict: bool
     tune: bool
+    refit_best: bool
     log: bool
     evaluate: bool
     shap: bool
@@ -122,13 +125,13 @@ class Config(BaseModel):
 
 
 def update_paths(config: Config, new_path: Path):
-    analytic = config.filepaths.data.analytic.model_dump()
+    analytic = deepcopy(config.filepaths.data.analytic.model_dump())
     for name, path in analytic.items():
         new_filepath = new_path / path
         new_filepath.parent.mkdir(parents=True, exist_ok=True)
         analytic[name] = new_filepath
-    config.filepaths.data.analytic = Analytic(**analytic)
-    results = config.filepaths.data.results.model_dump()
+    config.filepaths.data.analytic = Splits(**analytic)
+    results = deepcopy(config.filepaths.data.results.model_dump())
     for name, path in results.items():
         new_filepath = new_path / path
         new_filepath.parent.mkdir(parents=True, exist_ok=True)

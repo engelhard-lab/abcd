@@ -2,6 +2,7 @@ from multiprocessing import cpu_count
 from pathlib import Path
 from tomllib import load
 import pickle
+
 from lightning import seed_everything
 from optuna import Study
 from sklearn import set_config
@@ -10,13 +11,7 @@ import polars as pl
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
 from abcd.importance import make_shap
-from abcd.metadata import make_variable_metadata
-from abcd.preprocess import (
-    get_datasets,
-    get_splits,
-    make_dataset,
-    make_subject_metadata,
-)
+from abcd.preprocess import get_raw_dataset, process_splits
 from abcd.config import Config, update_paths
 from abcd.model import make_model, make_trainer
 from abcd.plots import plot
@@ -24,20 +19,7 @@ from abcd.tables import make_tables
 from abcd.tune import tune
 from abcd.utils import cleanup_checkpoints
 
-analyses = ["symptoms", "with_brain", "without_brain", "symptom", "all", "by_year"]
-
-
-# def transform_metadata(splits, features, labels, label_pipeline):
-#     for name, split in splits.items():
-#         groups = split.drop_in_place("src_subject_id")
-#         X = split.select(features)
-#         y = split.select(labels)
-#         if name == "train":
-#             y = label_pipeline.fit_transform(y)
-#         else:
-#             y = label_pipeline.transform(y)
-#         splits[name] = post_process(X=X, y=y, groups=groups)
-#     return splits
+analyses = ["symptoms", "with_brain", "by_year", "without_brain", "all"]
 
 
 def main():
@@ -45,19 +27,17 @@ def main():
     set_config(transform_output="polars")
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
-    datasets = get_datasets(config=config)
-    make_variable_metadata(dfs=datasets, features=config.features)
-    df = make_dataset(dfs=datasets, config=config)
-    metadata = make_subject_metadata(config=config, df=df)
-    metadata.write_csv("data/metadata.csv")
-    df.write_csv(config.filepaths.data.dataset)
-    df = df.drop("race_ethnicity")
+    seed_everything(config.random_seed)
+    splits = get_raw_dataset(config=config)
     for analysis in analyses:
-        config = config.model_copy()
+        print(analysis)
         analysis_path = "data/analyses" / Path(analysis)
+        with open("config.toml", "rb") as f:
+            config = Config(**load(f))
         update_paths(config, new_path=analysis_path)
-        seed_everything(config.random_seed)
-        train, val, test = get_splits(df=df, config=config, analysis=analysis)
+        train, val, test = process_splits(
+            splits=splits, config=config, analysis=analysis
+        )
         data_module = ABCDDataModule(
             train=train,
             val=val,
@@ -66,7 +46,7 @@ def main():
             num_workers=cpu_count(),
             dataset_class=RNNDataset,
         )
-        input_dim = next(iter(data_module.train_dataloader()))[0].shape[1]
+        input_dim = next(iter(data_module.train_dataloader()))[0].shape[-1]
         if config.tune:
             study = tune(
                 config=config,
@@ -78,6 +58,7 @@ def main():
             with open(config.filepaths.data.results.study, "rb") as f:
                 study: Study = pickle.load(f)
         print(study.best_params)
+        print(config.filepaths.data.results.checkpoints)
         model = make_model(
             input_dim=input_dim,
             output_dim=config.preprocess.n_quantiles,
@@ -86,17 +67,20 @@ def main():
             checkpoints=config.filepaths.data.results.checkpoints,
             **study.best_params,
         )
-        trainer, checkpoint_dir = make_trainer(config=config)
-        trainer.fit(model=model, datamodule=data_module)
-        cleanup_checkpoints(checkpoint_dir=checkpoint_dir, mode="min")
+        if config.refit_best:
+            trainer, _ = make_trainer(config=config)
+            trainer.fit(model=model, datamodule=data_module)
+            cleanup_checkpoints(
+                checkpoint_dir=config.filepaths.data.results.checkpoints, mode="min"
+            )
         if config.evaluate:
-            evaluate_model(config=config, model=model, analysis=analysis)
-    if config.shap:
-        make_shap(train, model=model, data_module=data_module)
-    if config.tables:
-        make_tables()
-    if config.plot:
-        plot(config=config)
+            evaluate_model(data_module=data_module, config=config, model=model)
+    # if config.shap:
+    #     make_shap(train, model=model, data_module=data_module)
+    # if config.tables:
+    #     make_tables()
+    # if config.plot:
+    #     plot(config=config)
 
 
 if __name__ == "__main__":
