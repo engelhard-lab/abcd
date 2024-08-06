@@ -282,11 +282,10 @@ def shift_quartile(p_factor, label):
 
 def impute_nulls(df: pl.DataFrame):
     # 1. Forward fill within each subject
-    # 2. Back fill if some subjects start with nulls
-    # 3. Fill nulls with mean across all subjects if some subjects have all nulls
-    return df.with_columns(
-        pl.all().forward_fill().backward_fill().over("src_subject_id")
-    ).with_columns(cs.numeric().fill_null(cs.numeric().median()))
+    # 2. Fill remaining nulls with median across all subjects
+    return df.with_columns(pl.all().forward_fill().over("src_subject_id")).with_columns(
+        cs.numeric().fill_null(cs.numeric().median())
+    )
 
 
 def add_labels(splits: dict[str, pl.DataFrame], config: Config):

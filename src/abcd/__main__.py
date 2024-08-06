@@ -58,8 +58,6 @@ def main():
             with open(config.filepaths.data.results.study, "rb") as f:
                 study: Study = pickle.load(f)
         print(study.best_params)
-        print(config.filepaths.data.results.checkpoints)
-        print(config.filepaths.data.results.study)
         model = make_model(
             input_dim=input_dim,
             output_dim=config.preprocess.n_quantiles,
