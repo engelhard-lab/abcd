@@ -10,6 +10,7 @@ class Splits(BaseModel):
 
 
 class Raw(BaseModel):
+    # cbcl: Path
     dataset: Path
     metadata: Path
     features: Path

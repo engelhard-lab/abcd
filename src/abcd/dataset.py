@@ -1,6 +1,7 @@
 from torch import tensor
 from lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.utils.rnn import pad_sequence
 import polars as pl
 
 
@@ -9,7 +10,8 @@ def make_tensor_dataset(dataset: pl.DataFrame):
     for subject in dataset.partition_by(
         "src_subject_id", maintain_order=True, include_key=False
     ):
-        label = subject.drop_in_place("label")
+        label = subject.drop_in_place("y_{t+1}")
+        subject.drop_in_place("y_t")
         label = tensor(label.to_numpy()).float()
         features = tensor(subject.to_numpy()).float()
         data.append((features, label))
@@ -17,7 +19,7 @@ def make_tensor_dataset(dataset: pl.DataFrame):
 
 
 class RNNDataset(Dataset):
-    def __init__(self, dataset) -> None:
+    def __init__(self, dataset: pl.DataFrame) -> None:
         self.dataset = make_tensor_dataset(dataset)
 
     def __len__(self):
@@ -28,9 +30,22 @@ class RNNDataset(Dataset):
         return features, labels
 
 
+def collate_fn(batch):
+    features, labels = zip(*batch)
+    padded_features = pad_sequence(features, batch_first=True, padding_value=0)
+    padded_labels = pad_sequence(labels, batch_first=True, padding_value=float("nan"))
+    return padded_features, padded_labels
+
+
 class ABCDDataModule(LightningDataModule):
     def __init__(
-        self, train, val, test, batch_size, dataset_class, num_workers
+        self,
+        train: pl.DataFrame,
+        val: pl.DataFrame,
+        test: pl.DataFrame,
+        batch_size: int,
+        dataset_class,
+        num_workers: int,
     ) -> None:
         super().__init__()
         self.train_dataset = dataset_class(dataset=train)
@@ -38,6 +53,7 @@ class ABCDDataModule(LightningDataModule):
         self.test_dataset = dataset_class(dataset=test)
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.feature_names = train.drop(["src_subject_id", "y_t", "y_{t+1}"]).columns
 
     def train_dataloader(self):
         return DataLoader(
@@ -49,6 +65,7 @@ class ABCDDataModule(LightningDataModule):
             pin_memory=True,
             persistent_workers=True,
             multiprocessing_context="fork",
+            collate_fn=collate_fn,
         )
 
     def val_dataloader(self):
@@ -60,6 +77,7 @@ class ABCDDataModule(LightningDataModule):
             pin_memory=True,
             persistent_workers=True,
             multiprocessing_context="fork",
+            collate_fn=collate_fn,
         )
 
     def test_dataloader(self):
@@ -71,4 +89,5 @@ class ABCDDataModule(LightningDataModule):
             pin_memory=True,
             persistent_workers=True,
             multiprocessing_context="fork",
+            collate_fn=collate_fn,
         )

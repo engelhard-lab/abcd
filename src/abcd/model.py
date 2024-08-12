@@ -40,11 +40,6 @@ class RNN(nn.Module):
 
 def make_metrics(step, loss, outputs, labels) -> dict:
     metrics = {f"{step}_loss": loss}
-    # outputs = outputs.permute(0, 2, 1).flatten(0, 1)
-    # labels = labels.flatten()
-    # is_not_nan = ~isnan(labels)
-    # outputs = outputs[is_not_nan]
-    # labels = labels[is_not_nan].long()
     labels = labels.long()
     if step == "val":
         auroc_score = auroc(
@@ -83,6 +78,11 @@ def make_metrics(step, loss, outputs, labels) -> dict:
     return metrics
 
 
+def remove_nan(outputs, labels):
+    valid_mask = ~isnan(labels)
+    return outputs[valid_mask], labels[valid_mask]
+
+
 class Network(LightningModule):
     def __init__(
         self,
@@ -103,12 +103,7 @@ class Network(LightningModule):
     def step(self, step: str, batch):
         inputs, labels = batch
         outputs = self(inputs)
-        # labels = labels  # .squeeze(-1)
-        labels = labels.flatten()
-        outputs = outputs.flatten(0, 1)  # .permute(0, 2, 1)
-        valid_mask = ~isnan(labels)
-        outputs = outputs[valid_mask]
-        labels = labels[valid_mask]
+        outputs, labels = remove_nan(outputs, labels)
         loss = self.criterion(outputs, labels)
         metrics = make_metrics(step, loss, outputs, labels)
         self.log_dict(metrics, prog_bar=True)
@@ -126,6 +121,7 @@ class Network(LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         inputs, labels = batch
         outputs = self(inputs)
+        outputs, labels = remove_nan(outputs, labels)
         return outputs, labels
 
     def configure_optimizers(self):

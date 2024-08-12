@@ -14,10 +14,9 @@ from torchmetrics.functional import (
     roc,
     precision_recall_curve,
 )
-from multiprocessing import cpu_count
 
 from abcd.config import Config
-from abcd.dataset import ABCDDataModule, RNNDataset
+from abcd.dataset import ABCDDataModule
 from abcd.model import Network, make_trainer
 
 REVERSE_EVENT_MAPPING = {
@@ -33,14 +32,9 @@ OUTPUT_COLUMNS = ["1", "2", "3", "4"]
 def make_predictions(config: Config, model: Network, data_module: ABCDDataModule):
     trainer, _ = make_trainer(config)
     predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
-    outputs, labels = zip(*predictions)
-    labels = torch.concat(labels).flatten()
-    outputs = torch.concat(outputs).permute(0, 2, 1).flatten(0, 1)
-    labels = labels.flatten()
-    outputs = outputs.flatten(0, 1)  # .permute(0, 2, 1)
-    valid_mask = ~torch.isnan(labels)
-    outputs = outputs[valid_mask]
-    labels = labels[valid_mask]
+    outputs, _ = zip(*predictions)
+    # labels = torch.concat(labels)
+    outputs = torch.concat(outputs)
     metadata = pl.read_csv(config.filepaths.data.raw.metadata)
     test_metadata = metadata.filter(pl.col("Split").eq("test"))
     outputs = pl.DataFrame(outputs.cpu().numpy(), schema=OUTPUT_COLUMNS)
@@ -212,27 +206,27 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         on=["Variable", "Group", "Quartile at t+1"],
     ).rename({"y": "Prevalence"})
     metrics.write_csv(config.filepaths.data.results.metrics / "metrics.csv")
-    # pr_curve = grouped_df.map_groups(
-    #     partial(make_curve, curve=precision_recall_curve, name="PR")
-    # )
-    # roc_curve = grouped_df.map_groups(partial(make_curve, curve=roc, name="ROC"))
-    # baselines = make_baselines(prevalence=prevalence)
-    # curves = pl.concat(
-    #     [pr_curve, roc_curve, baselines],
-    #     how="diagonal_relaxed",
-    # ).select(["Metric", "Curve", "Variable", "Group", "Quartile at t+1", "x", "y"])
-    # curves.write_csv(config.filepaths.data.results.metrics / "curves.csv")
+    pr_curve = grouped_df.map_groups(
+        partial(make_curve, curve=precision_recall_curve, name="PR")
+    )
+    roc_curve = grouped_df.map_groups(partial(make_curve, curve=roc, name="ROC"))
+    baselines = make_baselines(prevalence=prevalence)
+    curves = pl.concat(
+        [pr_curve, roc_curve, baselines],
+        how="diagonal_relaxed",
+    ).select(["Metric", "Curve", "Variable", "Group", "Quartile at t+1", "x", "y"])
+    curves.write_csv(config.filepaths.data.results.metrics / "curves.csv")
 
-    # spec, sens = calc_sensitivity_and_specificity(df=df)
-    # print(
-    #     "Specificity:",
-    #     spec[0].numpy().round(decimals=2),
-    #     "threshold:",
-    #     spec[1].numpy().round(decimals=2),
-    # )
-    # print(
-    #     "Senstivity:",
-    #     sens[0].numpy().round(decimals=2),
-    #     "threshold:",
-    #     sens[1].numpy().round(decimals=2),
-    # )
+    spec, sens = calc_sensitivity_and_specificity(df=df)
+    print(
+        "Specificity:",
+        spec[0].numpy().round(decimals=2),
+        "threshold:",
+        spec[1].numpy().round(decimals=2),
+    )
+    print(
+        "Senstivity:",
+        sens[0].numpy().round(decimals=2),
+        "threshold:",
+        sens[1].numpy().round(decimals=2),
+    )

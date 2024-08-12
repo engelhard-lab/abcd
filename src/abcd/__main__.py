@@ -11,7 +11,13 @@ import polars as pl
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
 from abcd.importance import make_shap
-from abcd.preprocess import get_raw_dataset, process_splits
+from abcd.metadata import make_subject_metadata
+from abcd.preprocess import (
+    generate_data,
+    get_dataset,
+    get_features,
+    split_data,
+)
 from abcd.config import Config, update_paths
 from abcd.model import make_model, make_trainer
 from abcd.plots import plot
@@ -19,7 +25,8 @@ from abcd.tables import make_tables
 from abcd.tune import tune
 from abcd.utils import cleanup_checkpoints
 
-analyses = ["symptoms", "with_brain", "by_year", "without_brain", "all"]
+# TODO , "by_year", "metadata",
+analyses = ["all", "with_brain", "symptoms", "without_brain"]
 
 
 def main():
@@ -28,25 +35,35 @@ def main():
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
     seed_everything(config.random_seed)
-    splits = get_raw_dataset(config=config)
+    if config.regenerate:
+        generate_data(config=config)
+    df = pl.read_csv(config.filepaths.data.raw.dataset)
     for analysis in analyses:
         print(analysis)
-        analysis_path = "data/analyses" / Path(analysis)
         with open("config.toml", "rb") as f:
             config = Config(**load(f))
+        analysis_path = "data/analyses" / Path(analysis)
         update_paths(config, new_path=analysis_path)
-        train, val, test = process_splits(
-            splits=splits, config=config, analysis=analysis
+        feature_selection = get_features(analysis=analysis, config=config)
+        feature_columns = df.select(feature_selection).columns
+        print(feature_columns)
+        splits = split_data(
+            df=df,
+            group=config.join_on[0],
+            train_size=config.preprocess.train_size,
+            random_state=config.random_seed,
         )
+        splits = get_dataset(splits, feature_columns=feature_columns, config=config)
+        if analysis == "all":
+            metadata = make_subject_metadata(splits=splits)
+            metadata.write_csv(config.filepaths.data.raw.metadata)
         data_module = ABCDDataModule(
-            train=train,
-            val=val,
-            test=test,
+            **splits,
             batch_size=config.training.batch_size,
             num_workers=cpu_count(),
             dataset_class=RNNDataset,
         )
-        input_dim = next(iter(data_module.train_dataloader()))[0].shape[-1]
+        input_dim = splits["train"].shape[-1] - 3
         if config.tune:
             study = tune(
                 config=config,
@@ -63,7 +80,7 @@ def main():
             output_dim=config.preprocess.n_quantiles,
             momentum=config.optimizer.momentum,
             nesterov=config.optimizer.nesterov,
-            checkpoints=None,  # , config.filepaths.data.results.checkpoints,
+            checkpoints=config.filepaths.data.results.checkpoints,
             **study.best_params,
         )
         if config.refit_best:
@@ -74,12 +91,12 @@ def main():
             )
         if config.evaluate:
             evaluate_model(data_module=data_module, config=config, model=model)
-    # if config.shap:
-    #     make_shap(train, model=model, data_module=data_module)
-    # if config.tables:
-    #     make_tables()
-    # if config.plot:
-    #     plot(config=config)
+    if config.shap:
+        make_shap(model=model, data_module=data_module)
+    if config.tables:
+        make_tables()
+    if config.plot:
+        plot(config=config)
 
 
 if __name__ == "__main__":

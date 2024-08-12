@@ -1,10 +1,10 @@
 from collections import defaultdict
 from typing import Callable
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import make_pipeline
-from sklearn.impute import KNNImputer
-from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import FunctionTransformer, make_pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 from sklearn.decomposition import FactorAnalysis
 import polars as pl
 from polars.type_aliases import JoinStrategy
@@ -16,8 +16,6 @@ from abcd.config import Config
 from abcd.metadata import make_variable_metadata
 
 
-RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
-SEX_MAPPING = {1: "Male", 0: "Female"}
 EVENTS = [
     "baseline_year_1_arm_1",
     "1_year_follow_up_y_arm_1",
@@ -79,15 +77,6 @@ def make_adi(df: pl.DataFrame, join_on: list[str]):
     )
 
 
-def pad_dataframe(df: pl.DataFrame):
-    return (
-        df.group_by("src_subject_id", maintain_order=True)
-        .agg(pl.all().extend_constant(None, len(EVENT_INDEX) - pl.len()))
-        .with_columns(pl.lit(EVENT_INDEX).alias("eventname"))
-        .explode(pl.exclude("src_subject_id"))
-    )
-
-
 def get_datasets(config: Config) -> list[pl.DataFrame]:
     columns_to_drop = (
         "_nm",
@@ -144,198 +133,6 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
-def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
-    dfs = [
-        split.clone().with_columns(pl.lit(name).alias("Split"))
-        for name, split in splits.items()
-    ]
-    df: pl.DataFrame = pl.concat(dfs)
-    rename_mapping = {
-        "src_subject_id": "Subject ID",
-        "eventname": "Time",
-        "p_factor_by_year": "Quartile at t by year",
-        "label_by_year": "Quartile at t+1 by year",
-        "p_factor": "Quartile at t",
-        "label": "Quartile at t+1",
-        "demo_sex_v2_1": "Sex",
-        "race_ethnicity": "Race",
-        "interview_age": "Age",
-        "adi_percentile": "ADI quartile",
-        "parent_highest_education": "Parent highest education",
-        "demo_comb_income_v2": "Combined income",
-    }
-    return (
-        df.rename(rename_mapping)
-        .select(["Split"] + list(rename_mapping.values()))
-        .with_columns(
-            pl.col("Sex").replace(SEX_MAPPING),
-            pl.col("Race").replace(RACE_MAPPING),
-            pl.col("Age").truediv(12).round(0).cast(pl.Int32),
-            pl.col("ADI quartile").qcut(quantiles=4, labels=["1", "2", "3", "4"]),
-        )
-        .with_columns(
-            pl.exclude(
-                "Subject ID",
-                "Time",
-                "Qartile at t",
-                "Quartile at t+1",
-                "Quartile at t by year",
-                "Quartile at t+1 by year",
-                "Age",
-            )
-            .forward_fill()
-            .over("Subject ID")
-        )
-    )
-
-
-class QuartileTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self, column):
-        self.column = column
-        self.cutpoints = [0.25, 0.5, 0.75]
-        self.labels = ["0", "1", "2", "3"]
-        self.quartiles: pl.Series
-
-    def fit(self, X: pl.DataFrame, y=None):
-        self.quartiles = pl.Series(
-            [X["factoranalysis0"].quantile(quantile=q) for q in self.cutpoints]
-        )
-        self.quartiles = self.quartiles.unique(maintain_order=True)
-        self.labels = self.labels[: self.quartiles.len() + 1]
-        return self
-
-    def transform(self, X: pl.DataFrame):
-        return X.select(
-            (
-                pl.col("factoranalysis0")
-                .cut(
-                    breaks=self.quartiles.to_list(),
-                    labels=self.labels,
-                )
-                .cast(pl.Int32)
-                .alias(self.column)
-            )
-        )
-
-
-def split_data(df: pl.DataFrame, config: Config):
-    dfs = df.partition_by("src_subject_id", maintain_order=True)
-    train, val_test = train_test_split(
-        dfs,
-        train_size=config.preprocess.train_size,
-        random_state=config.random_seed,
-        shuffle=True,
-    )
-    val, test = train_test_split(
-        val_test, train_size=0.5, random_state=config.random_seed, shuffle=False
-    )
-    return {
-        "train": pl.concat(train),
-        "val": pl.concat(val),
-        "test": pl.concat(test),
-    }
-
-
-def transform_split(name: str, split: pl.DataFrame, columns, pipeline):
-    data = split.select(columns)
-    if name == "train":
-        transformed_data = pipeline.fit_transform(data)
-    else:
-        transformed_data = pipeline.transform(data)
-    transformed_split = split.with_columns(transformed_data)
-    return transformed_split
-
-
-def transform_by_group(
-    name: str, split: pl.DataFrame, columns, groups, pipeline, pipelines
-):
-    dfs = []
-    for group_name, group in split.group_by(
-        groups, maintain_order=True, include_key=False
-    ):
-        data = group.select(columns)
-        if name == "train":
-            group_pipeline = pipeline()
-            transformed_data = group_pipeline.fit_transform(data)
-            pipelines[group_name] = group_pipeline
-        else:
-            group_pipeline = pipelines[group_name]
-            transformed_data = group_pipeline.transform(data)
-        df = group.with_columns(transformed_data)
-        dfs.append(df)
-    df = pl.concat(dfs)
-    split = split.with_columns(df)
-    return split
-
-
-def make_label_pipeline(name, config):
-    return partial(
-        make_pipeline,
-        FactorAnalysis(n_components=1, random_state=config.random_seed),
-        QuartileTransformer(name),
-    )
-
-
-def shift_quartile(p_factor, label):
-    return pl.col(p_factor).shift(-1).over("src_subject_id").alias(label)
-
-
-def impute_nulls(df: pl.DataFrame):
-    # 1. Forward fill within each subject
-    # 2. Fill remaining nulls with median across all subjects
-    return df.with_columns(pl.all().forward_fill().over("src_subject_id")).with_columns(
-        cs.numeric().fill_null(cs.numeric().median())
-    )
-
-
-def add_labels(splits: dict[str, pl.DataFrame], config: Config):
-    label_pipeline = make_label_pipeline("p_factor", config)
-    pipelines = {}
-    for name, split in splits.items():
-        split = split.filter(
-            ~pl.all_horizontal(pl.col(config.features.mh_p_cbcl.columns).is_null())
-        )
-        split = impute_nulls(df=split)
-        split = transform_by_group(
-            name=name,
-            split=split,
-            columns=config.features.mh_p_cbcl.columns,
-            groups="eventname",
-            pipeline=make_label_pipeline("p_factor_by_year", config),
-            pipelines=pipelines,
-        ).with_columns(
-            shift_quartile(p_factor="p_factor_by_year", label="label_by_year")
-        )
-        split = (
-            transform_split(
-                name=name,
-                split=split,
-                columns=config.features.mh_p_cbcl.columns,
-                pipeline=label_pipeline(),
-            )
-            .with_columns(shift_quartile(p_factor="p_factor", label="label"))
-            .pipe(pad_dataframe)
-            .filter(
-                pl.col("eventname").ne(4),
-                ~pl.col("label").is_null().all().over("src_subject_id"),
-            )
-        )
-        split.write_csv(getattr(config.filepaths.data.raw.splits, name))
-        splits[name] = split
-    return splits
-
-
-def add_features(features, splits: dict[str, pl.DataFrame], analysis: str):
-    pipeline = StandardScaler()
-    label = "label_by_year" if analysis == "by_year" else "label"
-    for name, split in splits.items():
-        split = transform_split(
-            name=name, split=split, columns=features, pipeline=pipeline
-        ).select("src_subject_id", pl.col(label).alias("label"), features)
-        splits[name] = split
-    return splits
-
-
 def get_brain_features(config: Config):
     brain_datasets = (
         "mri_y_dti_fa_fs_at",
@@ -353,6 +150,9 @@ def get_brain_features(config: Config):
 
 
 def get_features(analysis: str, config: Config):
+    columns_to_drop = [config.join_on[0], "y_t", "y_{t+1}", "race_ethnicity"]
+    if analysis == "metadata":
+        columns_to_drop = columns_to_drop[:-1]
     match analysis:
         case "with_brain" | "by_year":
             features = cs.exclude(config.features.mh_p_cbcl.columns)
@@ -360,53 +160,114 @@ def get_features(analysis: str, config: Config):
             brain_features = get_brain_features(config)
             features = cs.exclude(config.features.mh_p_cbcl.columns + brain_features)
         case "symptoms":
-            features = cs.by_name(config.features.mh_p_cbcl.columns)
+            features = cs.by_name(["eventname"] + config.features.mh_p_cbcl.columns)
         case "all":
             features = cs.all()
         case _:
             raise ValueError(f"Invalid analysis: {analysis}")
-    return features & cs.exclude(
-        "src_subject_id",
-        "race_ethnicity",
-        "p_factor",
-        "label",
-        "p_factor_by_year",
-        "label_by_year",
+    return features & cs.exclude(columns_to_drop)
+
+
+def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: int):
+    dfs = df.partition_by(group, maintain_order=True)
+    train, val_test = train_test_split(
+        dfs,
+        train_size=train_size,
+        random_state=random_state,
+        shuffle=True,
+    )
+    val, test = train_test_split(
+        val_test, train_size=0.5, random_state=random_state, shuffle=False
+    )
+    return pl.concat(train), pl.concat(val), pl.concat(test)
+
+
+def transform_data(
+    splits: tuple[pl.DataFrame, ...],
+    group: str,
+    feature_columns: list[str],
+    label_columns: list[str],
+) -> tuple[pl.DataFrame, ...]:
+    feature_pipeline = make_pipeline(StandardScaler(), SimpleImputer(strategy="mean"))
+    label_pipeline = make_pipeline(
+        StandardScaler(),
+        SimpleImputer(strategy="mean"),
+        FactorAnalysis(n_components=1),
+        KBinsDiscretizer(n_bins=4, encode="ordinal", strategy="quantile"),
+    )
+    identity_transformer = FunctionTransformer(lambda x: x)
+    transformers = [
+        ("indices", identity_transformer, [group]),
+        ("features", feature_pipeline, feature_columns),
+        ("labels", label_pipeline, label_columns),
+    ]
+    column_transformer = ColumnTransformer(
+        transformers=transformers,
+        remainder="drop",
+        verbose_feature_names_out=False,
+    )
+    train, val, test = splits
+    train = column_transformer.fit_transform(train)  # type: ignore
+    val = column_transformer.transform(val)  # type: ignore
+    test = column_transformer.transform(test)  # type: ignore
+    return train, val, test  # type: ignore # , column_transformer.named_transformers_["features"]
+
+
+def format_labels(
+    splits: tuple[pl.DataFrame, ...], group: str, observation: str
+) -> tuple[pl.DataFrame, ...]:
+    shift_y = pl.col("y_t").shift(-1).over(group)
+    columns = (group, observation, "y_t", "y_{t+1}")
+    return tuple(
+        split.rename({"factoranalysis0": "y_t"})
+        .with_columns(shift_y.alias("y_{t+1}"))
+        .select(pl.col(columns), pl.exclude(columns))
+        .drop_nulls(subset=["y_{t+1}"])
+        for split in splits
     )
 
 
-def process_splits(
-    splits: dict, config: Config, analysis: str
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    filepaths = config.filepaths.data.analytic.model_dump().values()
-    not_all_files_exist = not all([filepath.exists() for filepath in filepaths])
-    if not_all_files_exist or config.regenerate:
-        splits = {name: split.clone() for name, split in splits.items()}
-        features = get_features(analysis=analysis, config=config)
-        splits = add_features(splits=splits, features=features, analysis=analysis)
-        train, val, test = splits.values()
-        train.write_csv(config.filepaths.data.analytic.train)
-        val.write_csv(config.filepaths.data.analytic.val)
-        test.write_csv(config.filepaths.data.analytic.test)
-    else:
-        train = pl.read_csv(config.filepaths.data.analytic.train)
-        val = pl.read_csv(config.filepaths.data.analytic.val)
-        test = pl.read_csv(config.filepaths.data.analytic.test)
-    return train, val, test
-
-
-def get_raw_dataset(config: Config):
+def get_dataset(
+    splits: tuple[pl.DataFrame, ...], feature_columns: list[str], config: Config
+):
+    group, observation = config.join_on
     if config.regenerate:
-        datasets = get_datasets(config=config)
-        make_variable_metadata(dfs=datasets, features=config.features)
-        df = join_dataframes(dfs=datasets, join_on=config.join_on, how="outer_coalesce")
-        splits = split_data(df, config=config)
-        splits = add_labels(splits=splits, config=config)
-        metadata = make_subject_metadata(splits=splits)
-        metadata.write_csv(config.filepaths.data.raw.metadata)
+        splits = transform_data(
+            splits=splits,
+            group=group,
+            feature_columns=feature_columns,
+            label_columns=config.features.mh_p_cbcl.columns,
+        )
+        splits = format_labels(splits=splits, group=group, observation=observation)
+        split_dict = dict(zip(["train", "val", "test"], splits))
     else:
-        splits = {
+        split_dict = {
             name: pl.read_csv(path)
             for name, path in config.filepaths.data.raw.splits.model_dump().items()
         }
-    return splits
+    return split_dict
+
+
+def filter_data(df: pl.DataFrame, label_columns: list[str], group: str):
+    return df.filter(~pl.all_horizontal(pl.col(label_columns).is_null())).with_columns(
+        pl.all().forward_fill().over(group)
+    )
+
+
+def forward_fill_nulls(df: pl.DataFrame):
+    return df.with_columns(pl.all().forward_fill().over("src_subject_id"))
+
+
+def generate_data(config: Config):
+    datasets = get_datasets(config=config)
+    make_variable_metadata(dfs=datasets, features=config.features)
+    df = (
+        join_dataframes(dfs=datasets, join_on=config.join_on, how="outer_coalesce")
+        .pipe(
+            filter_data,
+            label_columns=config.features.mh_p_cbcl.columns,
+            group=config.join_on[0],
+        )
+        .pipe(forward_fill_nulls)
+    )
+    df.write_csv(config.filepaths.data.raw.dataset)

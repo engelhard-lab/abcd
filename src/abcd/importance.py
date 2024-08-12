@@ -24,7 +24,7 @@ def regress_shap_values(shap_values, X):
     coefs = {name: [] for name in X.columns}
     n_bootstraps = 100
     for _ in tqdm(range(n_bootstraps)):
-        X_resampled, shap_resampled = resample(X, shap_values)
+        X_resampled, shap_resampled = resample(X, shap_values)  # type: ignore
         for col in shap_values.columns:
             coef = (
                 make_pipeline(StandardScaler(), LinearRegression())
@@ -37,14 +37,15 @@ def regress_shap_values(shap_values, X):
     return df
 
 
-def make_shap(train, model, data_module):
-    columns = train.drop(["src_subject_id", "label"]).columns
+def make_shap(model, data_module):
     test_dataloader = iter(data_module.test_dataloader())
     X, _ = next(test_dataloader)
     background, _ = next(test_dataloader)
-    shap_values = make_shap_values(model, X, background, columns=columns)
+    shap_values = make_shap_values(
+        model, X, background, columns=data_module.feature_columns
+    )
     shap_values.write_csv("data/results/shap_values.csv")
-    features = pl.DataFrame(X.flatten(0, 1).numpy(), schema=columns)
+    features = pl.DataFrame(X.flatten(0, 1).numpy(), schema=data_module.feature_columns)
 
     # sex = features["demo_sex_v2_1"] > 0
     # male_shap_values = shap_values.filter(sex).with_columns(pl.lit("Male").alias("Sex"))
