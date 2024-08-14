@@ -3,7 +3,6 @@ from typing import Callable
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import FunctionTransformer, make_pipeline
-from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 from sklearn.decomposition import FactorAnalysis
 import polars as pl
@@ -13,18 +12,7 @@ import polars.selectors as cs
 from functools import partial, reduce
 
 from abcd.config import Config
-from abcd.metadata import make_variable_metadata
-
-
-EVENTS = [
-    "baseline_year_1_arm_1",
-    "1_year_follow_up_y_arm_1",
-    "2_year_follow_up_y_arm_1",
-    "3_year_follow_up_y_arm_1",
-    "4_year_follow_up_y_arm_1",
-]
-EVENT_INDEX = list(range(len(EVENTS)))
-EVENT_MAPPING = dict(zip(EVENTS, EVENT_INDEX))
+from abcd.metadata import make_variable_metadata, EVENTS, EVENT_MAPPING
 
 
 def drop_null_columns(features: pl.DataFrame, cutoff=0.25) -> pl.DataFrame:
@@ -50,14 +38,15 @@ def join_dataframes(
 
 def make_demographics(df: pl.DataFrame):
     education = ["demo_prnt_ed_v2", "demo_prtnr_ed_v2"]
+    sex = ["demo_sex_v2_null", "demo_sex_v2_2", "demo_sex_v2_3"]
+    join_on = ["src_subject_id", "eventname"]
     df = (
         df.with_columns(pl.max_horizontal(education).alias("parent_highest_education"))
+        .with_columns(pl.all().forward_fill().over("src_subject_id"))
         .drop(education)
-        .with_columns(
-            pl.all().forward_fill().backward_fill().over("src_subject_id"),
-        )
         .to_dummies("demo_sex_v2")
-        .drop("demo_sex_v2_2", "demo_sex_v2_3")
+        .select(cs.exclude(education + sex))
+        .sort(join_on)
     )
     return df
 
@@ -99,7 +88,7 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         {
             "abcd_p_demo": make_demographics,
             "led_l_adi": partial(make_adi, join_on=config.join_on),
-            "abcd_y_lt": lambda df: df.to_dummies(["site_id_l"], drop_first=True),
+            # "abcd_y_lt": lambda df: df.to_dummies(["site_id_l"], drop_first=True),
         }
     )
     dfs = []
@@ -133,6 +122,30 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
+def filter_data(df: pl.DataFrame, label_columns: list[str], group: str):
+    return df.filter(~pl.all_horizontal(pl.col(label_columns).is_null())).with_columns(
+        pl.all().forward_fill().over(group)
+    )
+
+
+def impute_within_subject(df: pl.DataFrame):
+    return df.with_columns(pl.all().forward_fill().over("src_subject_id"))
+
+
+def generate_data(config: Config):
+    datasets = get_datasets(config=config)
+    make_variable_metadata(dfs=datasets, features=config.features)
+    return (
+        join_dataframes(dfs=datasets, join_on=config.join_on, how="outer_coalesce")
+        .pipe(
+            filter_data,
+            label_columns=config.features.mh_p_cbcl.columns,
+            group=config.join_on[0],
+        )
+        .pipe(impute_within_subject)
+    )
+
+
 def get_brain_features(config: Config):
     brain_datasets = (
         "mri_y_dti_fa_fs_at",
@@ -149,23 +162,26 @@ def get_brain_features(config: Config):
     ]
 
 
-def get_features(analysis: str, config: Config):
-    columns_to_drop = [config.join_on[0], "y_t", "y_{t+1}", "race_ethnicity"]
-    if analysis == "metadata":
-        columns_to_drop = columns_to_drop[:-1]
+def get_features(df: pl.DataFrame, analysis: str, config: Config):
+    brain_features = get_brain_features(config)
+    include = []
+    exclude = [config.join_on[0], "y_t", "y_{t+1}", "race_ethnicity"]
     match analysis:
-        case "with_brain" | "by_year":
-            features = cs.exclude(config.features.mh_p_cbcl.columns)
-        case "without_brain":
-            brain_features = get_brain_features(config)
-            features = cs.exclude(config.features.mh_p_cbcl.columns + brain_features)
+        case "questions_brain":
+            exclude += config.features.mh_p_cbcl.columns
+        case "questions" | "by_year":
+            exclude += config.features.mh_p_cbcl.columns + brain_features
+        case "questions_symptoms":
+            exclude += brain_features
         case "symptoms":
-            features = cs.by_name(["eventname"] + config.features.mh_p_cbcl.columns)
+            include += config.features.mh_p_cbcl.columns
+        case "metadata":
+            exclude = exclude[:-1]
         case "all":
-            features = cs.all()
+            pass
         case _:
             raise ValueError(f"Invalid analysis: {analysis}")
-    return features & cs.exclude(columns_to_drop)
+    return df.select(cs.by_name(include) | cs.exclude(exclude)).columns
 
 
 def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: int):
@@ -179,95 +195,139 @@ def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: in
     val, test = train_test_split(
         val_test, train_size=0.5, random_state=random_state, shuffle=False
     )
-    return pl.concat(train), pl.concat(val), pl.concat(test)
+    return {"train": pl.concat(train), "val": pl.concat(val), "test": pl.concat(test)}
 
 
-def transform_data(
-    splits: tuple[pl.DataFrame, ...],
+def format_labels(
+    splits: dict[str, pl.DataFrame], group: str, observation: str
+) -> dict[str, pl.DataFrame]:
+    shift_y = pl.col("y_t").shift(-1).over(group)
+    columns = (group, observation, "y_t", "y_{t+1}")
+    return {
+        name: split.rename({"factoranalysis0": "y_t"})
+        .with_columns(shift_y.alias("y_{t+1}"))
+        .select(pl.col(columns), pl.exclude(columns))
+        .drop_nulls(subset=["y_{t+1}"])
+        for name, split in splits.items()
+    }
+
+
+def transform_by_year(
+    splits: dict[str, pl.DataFrame], transformer: Callable, observation: str
+):
+    transformers = {}
+    train_groups = []
+    for name, train_group in splits["train"].group_by(observation, maintain_order=True):
+        transformers[name] = transformer()
+        train_groups.append(transformers[name].fit_transform(train_group))
+    val_groups = []
+    for name, val_group in splits["val"].group_by(observation, maintain_order=True):
+        val_groups.append(transformers[name].transform(val_group))
+    test_groups = []
+    for name, test_group in splits["test"].group_by(observation, maintain_order=True):
+        test_groups.append(transformers[name].transform(test_group))
+    splits["train"] = pl.concat(train_groups)
+    splits["val"] = pl.concat(val_groups)
+    splits["test"] = pl.concat(test_groups)
+    return splits
+
+
+def make_transformer(
+    analysis: str,
     group: str,
     feature_columns: list[str],
     label_columns: list[str],
-) -> tuple[pl.DataFrame, ...]:
-    feature_pipeline = make_pipeline(StandardScaler(), SimpleImputer(strategy="mean"))
+    n_quantiles: int,
+):
+    identity_transformer = FunctionTransformer(lambda x: x)
+    if analysis == "metadata":
+        feature_pipeline = identity_transformer
+    else:
+        feature_pipeline = make_pipeline(
+            StandardScaler(),
+        )
     label_pipeline = make_pipeline(
         StandardScaler(),
-        SimpleImputer(strategy="mean"),
         FactorAnalysis(n_components=1),
-        KBinsDiscretizer(n_bins=4, encode="ordinal", strategy="quantile"),
+        KBinsDiscretizer(n_bins=n_quantiles, encode="ordinal", strategy="quantile"),
     )
-    identity_transformer = FunctionTransformer(lambda x: x)
     transformers = [
         ("indices", identity_transformer, [group]),
         ("features", feature_pipeline, feature_columns),
         ("labels", label_pipeline, label_columns),
     ]
-    column_transformer = ColumnTransformer(
+    return ColumnTransformer(
         transformers=transformers,
         remainder="drop",
         verbose_feature_names_out=False,
     )
-    train, val, test = splits
-    train = column_transformer.fit_transform(train)  # type: ignore
-    val = column_transformer.transform(val)  # type: ignore
-    test = column_transformer.transform(test)  # type: ignore
-    return train, val, test  # type: ignore # , column_transformer.named_transformers_["features"]
 
 
-def format_labels(
-    splits: tuple[pl.DataFrame, ...], group: str, observation: str
-) -> tuple[pl.DataFrame, ...]:
-    shift_y = pl.col("y_t").shift(-1).over(group)
-    columns = (group, observation, "y_t", "y_{t+1}")
-    return tuple(
-        split.rename({"factoranalysis0": "y_t"})
-        .with_columns(shift_y.alias("y_{t+1}"))
-        .select(pl.col(columns), pl.exclude(columns))
-        .drop_nulls(subset=["y_{t+1}"])
-        for split in splits
+def impute_by_time_point(df: pl.DataFrame):
+    return df.with_columns(pl.all().fill_null(pl.all().median()).over("eventname"))
+
+
+def transform_data(
+    splits: dict,
+    group: str,
+    observation: str,
+    feature_columns: list[str],
+    label_columns: list[str],
+    analysis: str,
+    n_quantiles: int,
+) -> dict[str, pl.DataFrame]:
+    partial_transformer = partial(
+        make_transformer,
+        analysis=analysis,
+        group=group,
+        feature_columns=feature_columns,
+        label_columns=label_columns,
+        n_quantiles=n_quantiles,
     )
+    for name, split in splits.items():
+        splits[name] = split.pipe(impute_by_time_point)
+    if analysis == "by_year":
+        splits = transform_by_year(
+            splits=splits,
+            transformer=partial_transformer,
+            observation=observation,
+        )
+    else:
+        transformer = partial_transformer()
+        splits["train"] = transformer.fit_transform(splits["train"])
+        splits["val"] = transformer.transform(splits["val"])
+        splits["test"] = transformer.transform(splits["test"])
+    splits = format_labels(splits=splits, group=group, observation=observation)
+    return splits
 
 
-def get_dataset(
-    splits: tuple[pl.DataFrame, ...], feature_columns: list[str], config: Config
-):
-    group, observation = config.join_on
+def get_dataset(analysis: str, config: Config):
     if config.regenerate:
+        df = pl.read_csv(config.filepaths.data.raw.dataset)
+        group, observation = config.join_on
+        splits = split_data(
+            df=df,
+            group=config.join_on[0],
+            train_size=config.preprocess.train_size,
+            random_state=config.random_seed,
+        )
+        features = get_features(df, analysis=analysis, config=config)
         splits = transform_data(
             splits=splits,
             group=group,
-            feature_columns=feature_columns,
+            observation=observation,
+            feature_columns=features,
             label_columns=config.features.mh_p_cbcl.columns,
+            analysis=analysis,
+            n_quantiles=config.preprocess.n_quantiles,
         )
-        splits = format_labels(splits=splits, group=group, observation=observation)
-        split_dict = dict(zip(["train", "val", "test"], splits))
+        splits["train"].write_csv(config.filepaths.data.analytic.train)
+        splits["val"].write_csv(config.filepaths.data.analytic.val)
+        splits["test"].write_csv(config.filepaths.data.analytic.test)
+        return splits
     else:
-        split_dict = {
-            name: pl.read_csv(path)
-            for name, path in config.filepaths.data.raw.splits.model_dump().items()
+        return {
+            "train": pl.read_csv(config.filepaths.data.analytic.train),
+            "val": pl.read_csv(config.filepaths.data.analytic.val),
+            "test": pl.read_csv(config.filepaths.data.analytic.test),
         }
-    return split_dict
-
-
-def filter_data(df: pl.DataFrame, label_columns: list[str], group: str):
-    return df.filter(~pl.all_horizontal(pl.col(label_columns).is_null())).with_columns(
-        pl.all().forward_fill().over(group)
-    )
-
-
-def forward_fill_nulls(df: pl.DataFrame):
-    return df.with_columns(pl.all().forward_fill().over("src_subject_id"))
-
-
-def generate_data(config: Config):
-    datasets = get_datasets(config=config)
-    make_variable_metadata(dfs=datasets, features=config.features)
-    df = (
-        join_dataframes(dfs=datasets, join_on=config.join_on, how="outer_coalesce")
-        .pipe(
-            filter_data,
-            label_columns=config.features.mh_p_cbcl.columns,
-            group=config.join_on[0],
-        )
-        .pipe(forward_fill_nulls)
-    )
-    df.write_csv(config.filepaths.data.raw.dataset)

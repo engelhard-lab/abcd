@@ -1,7 +1,7 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = true
-tune = true
+regenerate = false
+tune = false
 refit_best = true
 log = false
 predict = true
@@ -10,9 +10,8 @@ shap = false
 plot = false
 tables = false
 verbose = false
-n_trials = 16
+n_trials = 32
 join_on = ["src_subject_id", "eventname"]
-target = "next_p_factor"
 
 
 [filepaths]
@@ -23,10 +22,7 @@ plots = "data/plots/"
 dataset = "data/raw/dataset.csv"
 metadata = "data/raw/metadata.csv"
 features = "data/raw/features/"
-[filepaths.data.raw.splits]
-train = "data/raw/train.csv"
-val = "data/raw/val.csv"
-test = "data/raw/test.csv"
+splits = "data/raw/splits/"
 [filepaths.data.analytic]
 train = "analytic/train.csv"
 val = "analytic/val.csv"
@@ -46,8 +42,8 @@ train_size = 0.8
 
 
 [training]
-batch_size = 512
-max_epochs = 300
+batch_size = 2048
+max_epochs = 200
 gradient_clip = 1.0
 
 [optimizer]
@@ -55,7 +51,7 @@ momentum = 0.99
 nesterov = true
 [optimizer.lr]
 low = 1e-4
-high = 1e-2
+high = 1e-1
 log = true
 [optimizer.weight_decay]
 low = 1e-8
@@ -69,7 +65,7 @@ low = 0.0
 high = 0.75
 [model.num_layers]
 low = 1
-high = 3
+high = 5
 
 [logging]
 checkpoint_every_n_steps = 1
@@ -110,7 +106,7 @@ columns = [
 [features.abcd_y_lt]
 name = "Demographics"
 respondent = "Parent"
-columns = ["interview_age", "site_id_l"]
+columns = ["interview_age"] # , "site_id_l"
 [features.abcd_aces]
 name = "Adverse childhood experiences (ACEs)"
 respondent = "Parent"                         # TODO check if this is from parent, youth, or both

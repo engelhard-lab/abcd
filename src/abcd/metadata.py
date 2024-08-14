@@ -1,6 +1,19 @@
 import polars as pl
+import polars.selectors as cs
 
 from abcd.config import Features
+
+RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
+SEX_MAPPING = {0: "Female", 1: "Male"}
+EVENTS = [
+    "baseline_year_1_arm_1",
+    "1_year_follow_up_y_arm_1",
+    "2_year_follow_up_y_arm_1",
+    "3_year_follow_up_y_arm_1",
+    "4_year_follow_up_y_arm_1",
+]
+EVENT_INDEX = list(range(len(EVENTS)))
+EVENT_MAPPING = dict(zip(EVENTS, EVENT_INDEX))
 
 
 def rename_questions() -> pl.Expr:
@@ -14,7 +27,7 @@ def rename_questions() -> pl.Expr:
         .when(pl.col("variable").str.contains("demo_comb_income_v2"))
         .then(pl.lit("Household income"))
         .when(pl.col("variable").eq(pl.lit("eventname")))
-        .then(pl.lit("Year"))
+        .then(pl.lit("Measurement"))
         .otherwise(pl.col("question"))
         .alias("question")
     )
@@ -23,7 +36,7 @@ def rename_questions() -> pl.Expr:
 def rename_datasets() -> pl.Expr:
     return (
         pl.when(pl.col("variable").str.contains("eventname|site_id"))
-        .then(pl.lit("Site and year"))
+        .then(pl.lit("Site and measurement"))
         .when(pl.col("variable").str.contains("demo_sex_v2_|interview_age"))
         .then(pl.lit("Age and sex"))
         .when(
@@ -107,73 +120,39 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
 
 
 def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
-    # RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
-    # SEX_MAPPING = {1: "Male", 2: "Female"}
     df = pl.concat(
         [
             split.with_columns(pl.lit(name).alias("Split"))
             for name, split in splits.items()
         ]
     )
-    race = pl.read_csv(
-        "data/raw/features/abcd_p_demo.csv",
-        columns=["src_subject_id", "race_ethnicity"],
-    )
-    df = df.join(race, on="src_subject_id", how="left")
-    sex_mapping = dict(
-        zip(
-            df["demo_sex_v2_1"]
-            .unique(maintain_order=True)
-            .sort(descending=True)
-            .to_list(),
-            ["Male", "Female"],
-        )
-    )
-    race_mapping = dict(
-        zip(
-            df["race_ethnicity"]
-            .unique(maintain_order=True)
-            .drop_nulls()
-            .sort(descending=True)
-            .to_list(),
-            ["White", "Black", "Hispanic", "Asian", "Other"],
-        )
-    )
-    print(sex_mapping, race_mapping)
     rename_mapping = {
         "src_subject_id": "Subject ID",
-        "eventname": "Time",
-        # "p_factor_by_year": "Quartile at t by year",
-        # "label_by_year": "Quartile at t+1 by year",
+        "eventname": "Measurement",
         "y_t": "Quartile at t",
         "y_{t+1}": "Quartile at t+1",
         "demo_sex_v2_1": "Sex",
         "race_ethnicity": "Race",
         "interview_age": "Age",
         "adi_percentile": "ADI quartile",
-        "parent_highest_education": "Parent highest education",
-        "demo_comb_income_v2": "Combined income",
+        # "parent_highest_education": "Parent highest education",
+        # "demo_comb_income_v2": "Combined income",
     }
     return (
         df.rename(rename_mapping)
         .select("Split", *rename_mapping.values())
         .with_columns(
-            pl.col("Sex").replace(sex_mapping),
-            pl.col("Race").replace(race_mapping),
+            pl.col("Sex").replace(SEX_MAPPING),
+            pl.col("Race").replace(RACE_MAPPING),
             pl.col("Age").truediv(12).round(0).cast(pl.Int32),
             pl.col("ADI quartile").qcut(quantiles=4, labels=["1", "2", "3", "4"]),
         )
-        .with_columns(
-            pl.exclude(
-                "Subject ID",
-                "Time",
-                "Qartile at t",
-                "Quartile at t+1",
-                "Quartile at t by year",
-                "Quartile at t+1 by year",
-                "Age",
-            )
-            .forward_fill()
-            .over("Subject ID")
-        )
+        # .with_columns(pl.col("Sex", "Race").forward_fill().over("Subject ID"))
+        .with_columns(cs.numeric().cast(pl.Int32))
+        # .sort(
+        #     pl.col("Split").cast(pl.Enum(["train", "val", "test"])),
+        #     "Subject ID",
+        #     "Measurement",
+        #     descending=False,
+        # )
     )

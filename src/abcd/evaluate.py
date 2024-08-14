@@ -10,45 +10,29 @@ from torchmetrics.classification import (
     MulticlassSensitivityAtSpecificity,
 )
 from torchmetrics.wrappers import BootStrapper
-from torchmetrics.functional import (
-    roc,
-    precision_recall_curve,
-)
+from torchmetrics.functional import roc, precision_recall_curve
 
 from abcd.config import Config
 from abcd.dataset import ABCDDataModule
 from abcd.model import Network, make_trainer
 
-REVERSE_EVENT_MAPPING = {
-    0: "Baseline",
-    1: "1",
-    2: "2",
-    3: "3",
-    4: "4",
-}
 OUTPUT_COLUMNS = ["1", "2", "3", "4"]
 
 
 def make_predictions(config: Config, model: Network, data_module: ABCDDataModule):
-    trainer, _ = make_trainer(config)
+    trainer = make_trainer(config, checkpoint=False)
     predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
     outputs, _ = zip(*predictions)
-    # labels = torch.concat(labels)
     outputs = torch.concat(outputs)
     metadata = pl.read_csv(config.filepaths.data.raw.metadata)
     test_metadata = metadata.filter(pl.col("Split").eq("test"))
     outputs = pl.DataFrame(outputs.cpu().numpy(), schema=OUTPUT_COLUMNS)
-    return pl.concat([test_metadata, outputs], how="horizontal").drop_nulls(
-        "Quartile at t+1"
-    )
+    return pl.concat([test_metadata, outputs], how="horizontal")
 
 
 def get_predictions(df: pl.DataFrame):
     outputs = torch.tensor(df.select(OUTPUT_COLUMNS).to_numpy()).float()
     labels = torch.tensor(df["Quartile at t+1"].to_numpy()).long()
-    is_not_nan = ~torch.isnan(labels)
-    outputs = outputs[is_not_nan]
-    labels = labels[is_not_nan].long()
     return outputs, labels
 
 
@@ -120,8 +104,7 @@ def make_metrics(df: pl.DataFrame):
 
 def make_prevalence(df: pl.DataFrame):
     df = (
-        df.with_columns(pl.col("Quartile at t+1").add(1))
-        .to_dummies(["Quartile at t+1"])
+        df.to_dummies(["Quartile at t+1"])
         .group_by("Variable", "Group")
         .agg(cs.contains("Quartile at t+1_").mean())
         .rename(lambda x: x.replace("Quartile at t+1_", ""))
@@ -134,6 +117,7 @@ def make_prevalence(df: pl.DataFrame):
             pl.lit("PR").alias("Metric"),
             pl.lit("Baseline").alias("Curve"),
             pl.lit([0, 1]).alias("x"),
+            # pl.col("Quartile at t+1").cast(pl.Int32).add(1),
         )
     )
     return df
@@ -162,7 +146,21 @@ def calc_sensitivity_and_specificity(df: pl.DataFrame):
         num_classes=outputs.shape[-1], min_specificity=0.5
     )
     sens = sensitivity(outputs, labels)
-    return spec, sens
+    spec = pl.DataFrame(
+        {
+            "Metric": "Specificity",
+            "Value": spec[0].numpy().round(decimals=2),
+            "Threshold": spec[1].numpy().round(decimals=2),
+        }
+    )
+    sens = pl.DataFrame(
+        {
+            "Metric": "Sensitivity",
+            "Value": sens[0].numpy().round(decimals=2),
+            "Threshold": sens[1].numpy().round(decimals=2),
+        }
+    )
+    return pl.concat([spec, sens])
 
 
 def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
@@ -180,11 +178,11 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
     )
     variables = [
         "Quartile subset",
-        # "Sex",
-        # "Race",
-        # "Age",
-        # "Time",
-        # "ADI quartile",
+        "Sex",
+        "Race",
+        "Age",
+        "Measurement",
+        "ADI quartile",
     ]
     df = df.melt(
         id_vars=OUTPUT_COLUMNS + ["Quartile at t", "Quartile at t+1"],
@@ -198,13 +196,12 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
     df = pl.concat([df_all, df]).drop_nulls("Group")
     prevalence = make_prevalence(df=df)
     grouped_df = df.group_by("Variable", "Group", maintain_order=True)
-    metrics = grouped_df.map_groups(make_metrics).with_columns(
-        pl.col("Quartile at t+1").add(1)
-    )
+    metrics = grouped_df.map_groups(make_metrics)
     metrics = metrics.join(
         prevalence.select(["Variable", "Group", "Quartile at t+1", "y"]),
         on=["Variable", "Group", "Quartile at t+1"],
     ).rename({"y": "Prevalence"})
+    print(metrics)
     metrics.write_csv(config.filepaths.data.results.metrics / "metrics.csv")
     pr_curve = grouped_df.map_groups(
         partial(make_curve, curve=precision_recall_curve, name="PR")
@@ -216,17 +213,7 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         how="diagonal_relaxed",
     ).select(["Metric", "Curve", "Variable", "Group", "Quartile at t+1", "x", "y"])
     curves.write_csv(config.filepaths.data.results.metrics / "curves.csv")
-
-    spec, sens = calc_sensitivity_and_specificity(df=df)
-    print(
-        "Specificity:",
-        spec[0].numpy().round(decimals=2),
-        "threshold:",
-        spec[1].numpy().round(decimals=2),
-    )
-    print(
-        "Senstivity:",
-        sens[0].numpy().round(decimals=2),
-        "threshold:",
-        sens[1].numpy().round(decimals=2),
+    sens_spec = calc_sensitivity_and_specificity(df=df)
+    sens_spec.write_csv(
+        config.filepaths.data.results.metrics / "sensitivity_specificity.csv"
     )

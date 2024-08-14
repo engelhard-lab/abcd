@@ -64,7 +64,7 @@ def quartile_counts_table():
 
 def make_metric_table(df: pl.DataFrame, groups: list[str]):
     df = (
-        df.group_by(groups + ["Next quartile"], maintain_order=True)
+        df.group_by(groups + ["Quartile at t+1"], maintain_order=True)
         .agg(
             pl.col("Prevalence").first(),
             pl.col("value").mean().round(2).cast(pl.String)
@@ -79,12 +79,13 @@ def make_metric_table(df: pl.DataFrame, groups: list[str]):
             )
             .otherwise(pl.col("value"))
         )
-        .sort(groups + ["Next quartile"])
-        .pivot(values="value", columns="Next quartile", index=groups)
+        .sort(groups + ["Quartile at t+1"])
+        .pivot(values="value", columns="Quartile at t+1", index=groups)
         .rename(
             {"1": "Quartile 1", "2": "Quartile 2", "3": "Quartile 3", "4": "Quartile 4"}
         )
     )
+    print(df)
     return df
 
 
@@ -116,30 +117,31 @@ def shap_table():
 
 def make_tables():
     df = pl.read_csv(
-        "data/cbcl/results/metrics/metrics.csv"
+        "data/tables/analyses_metrics.csv"  # "data/cbcl/results/metrics/metrics.csv"
     ).with_columns(  # "data/results/metrics.csv"
         pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
         pl.col("Group").str.replace("Year ", ""),
         pl.col("Variable").str.replace("Measurement year", "Year"),
     )
     metrics_df = df.filter(pl.col("Variable").eq("Quartile subset"))
-    metrics_table_1 = make_metric_table(
-        df=metrics_df, groups=["Metric", "Group"]
+    metrics_table = make_metric_table(
+        df=metrics_df, groups=["analysis", "Metric", "Group"]
     ).with_columns(pl.lit("Questions + brain").alias("Feature set"))
+    metrics_table.write_csv("data/results/tables/metrics_summary.csv")
     # print(metrics_table+)
-    df = pl.read_csv("data/results/metrics.csv").with_columns(  #
-        pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
-        pl.col("Group").str.replace("Year ", ""),
-        pl.col("Variable").str.replace("Measurement year", "Year"),
-    )
-    metrics_df = df.filter(pl.col("Variable").eq("Quartile subset"))
-    metrics_table_2 = make_metric_table(
-        df=metrics_df, groups=["Metric", "Group"]
-    ).with_columns(pl.lit("Autoregressive").alias("Feature set"))
-    metrics_table = pl.concat([metrics_table_1, metrics_table_2]).select(
-        pl.col("Feature set"), pl.exclude("Feature set")
-    )
-    metrics_table.write_csv("data/results/tables/metrics_temp.csv")
+    # df = pl.read_csv("data/results/metrics.csv").with_columns(  #
+    #     pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
+    #     pl.col("Group").str.replace("Year ", ""),
+    #     pl.col("Variable").str.replace("Measurement year", "Year"),
+    # )
+    # metrics_df = df.filter(pl.col("Variable").eq("Quartile subset"))
+    # metrics_table_2 = make_metric_table(
+    #     df=metrics_df, groups=["Metric", "Group"]
+    # ).with_columns(pl.lit("Autoregressive").alias("Feature set"))
+    # metrics_table = pl.concat([metrics_table_1, metrics_table_2]).select(
+    #     pl.col("Feature set"), pl.exclude("Feature set")
+    # )
+    # metrics_table.write_csv("data/results/tables/metrics_summary.csv")
     # demographic_df = df.filter(pl.col("Variable").ne("Quartile subset"))
     # demographic_metrics = make_metric_table(
     #     df=demographic_df, groups=["Metric", "Variable", "Group"]

@@ -44,10 +44,10 @@ def objective(
         nesterov=config.optimizer.nesterov,
         **params,
     )
-    trainer, checkpoint_callback = make_trainer(config)
+    trainer = make_trainer(config, checkpoint=True)
     trainer.fit(model, datamodule=data_module)
     cleanup_checkpoints(config.filepaths.data.results.checkpoints, mode="min")
-    return checkpoint_callback.best_model_score.item()  # type: ignore
+    return trainer.checkpoint_callbacks[0].best_model_score.item()  # type: ignore
 
 
 def tune(config: Config, data_module, input_dim: int, output_dim: int):
@@ -71,5 +71,4 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int):
     study.optimize(func=objective_function, n_trials=config.n_trials)
     with open(config.filepaths.data.results.study, "wb") as f:
         pickle.dump(study, f)
-    cleanup_checkpoints(config.filepaths.data.results.checkpoints, mode="min")
     return study

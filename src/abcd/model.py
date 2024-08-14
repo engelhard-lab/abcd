@@ -13,14 +13,22 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import Trainer
 from torchmetrics.functional import (
     auroc,
-    average_precision,
+    # average_precision,
 )
 from abcd.config import Config
 from abcd.utils import get_best_checkpoint
 
 
 class RNN(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dim, num_layers, dropout):
+    def __init__(
+        self,
+        input_dim,
+        output_dim,
+        hidden_dim,
+        num_layers,
+        dropout,
+        # , bidirectional
+    ):
         super().__init__()
         self.rnn = nn.RNN(
             input_dim,
@@ -29,7 +37,10 @@ class RNN(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             nonlinearity="tanh",
+            # bidirectional=bidirectional,
         )
+        # if bidirectional:
+        #     hidden_dim = hidden_dim * 2
         self.fc = nn.Linear(in_features=hidden_dim, out_features=output_dim)
 
     def forward(self, x):
@@ -48,39 +59,13 @@ def make_metrics(step, loss, outputs, labels) -> dict:
             task="multiclass",
             num_classes=outputs.shape[-1],
         )
-        ap_score = average_precision(
-            outputs,
-            labels,
-            task="multiclass",
-            num_classes=outputs.shape[-1],
-            # average="none",
-        )
-        metrics.update({"auroc": auroc_score, "ap": ap_score})
-    if step == "test":
-        auroc_score = auroc(
-            outputs,
-            labels,
-            task="multiclass",
-            num_classes=outputs.shape[-1],
-            average="none",
-        )
-        for i, auc in enumerate(auroc_score):  # type: ignore
-            metrics.update({f"auroc_{i+1}": auc})
-        ap_score = average_precision(
-            outputs,
-            labels,
-            task="multiclass",
-            num_classes=outputs.shape[-1],
-            average="none",
-        )
-        for i, ap in enumerate(ap_score):  # type: ignore
-            metrics.update({f"ap_{i+1}": ap})
+        metrics.update({"auroc": auroc_score})
     return metrics
 
 
-def remove_nan(outputs, labels):
-    valid_mask = ~isnan(labels)
-    return outputs[valid_mask], labels[valid_mask]
+def drop_nan(outputs, labels):
+    is_not_nan = ~isnan(labels)
+    return outputs[is_not_nan], labels[is_not_nan]
 
 
 class Network(LightningModule):
@@ -103,7 +88,7 @@ class Network(LightningModule):
     def step(self, step: str, batch):
         inputs, labels = batch
         outputs = self(inputs)
-        outputs, labels = remove_nan(outputs, labels)
+        outputs, labels = drop_nan(outputs, labels)
         loss = self.criterion(outputs, labels)
         metrics = make_metrics(step, loss, outputs, labels)
         self.log_dict(metrics, prog_bar=True)
@@ -121,7 +106,7 @@ class Network(LightningModule):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         inputs, labels = batch
         outputs = self(inputs)
-        outputs, labels = remove_nan(outputs, labels)
+        outputs, labels = drop_nan(outputs, labels)
         return outputs, labels
 
     def configure_optimizers(self):
@@ -134,38 +119,40 @@ class Network(LightningModule):
         return {"optimizer": self.optimizer, "lr_scheduler": scheduler_config}
 
 
-def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=config.filepaths.data.results.checkpoints,
-        filename="{epoch}_{step}_{val_loss:.2f}",
-        save_top_k=1,
-        verbose=config.verbose,
-        monitor="val_loss",
-        mode="min",
-        every_n_train_steps=config.logging.checkpoint_every_n_steps,
+def make_trainer(config: Config, checkpoint: bool) -> Trainer:
+    early_stopping = EarlyStopping(monitor="val_loss", mode="min", patience=4)
+    callbacks = [early_stopping, RichProgressBar()]
+    if checkpoint:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=config.filepaths.data.results.checkpoints,
+            filename="{epoch}_{step}_{val_loss:.3f}",
+            save_top_k=1,
+            verbose=config.verbose,
+            monitor="val_loss",
+            mode="min",
+            every_n_train_steps=config.logging.checkpoint_every_n_steps,
+        )
+        callbacks.append(
+            checkpoint_callback,
+        )
+    logger = (
+        TensorBoardLogger(save_dir=config.filepaths.data.results.logs)
+        if config.log
+        else False
     )
-    early_stopping = EarlyStopping(monitor="val_loss", mode="min", patience=3)
-    callbacks = [
-        checkpoint_callback,
-        early_stopping,
-        RichProgressBar(),
-    ]
-    return (
-        Trainer(
-            logger=TensorBoardLogger(save_dir=config.filepaths.data.results.logs)
-            if config.log
-            else False,
-            callbacks=callbacks,
-            gradient_clip_val=config.training.gradient_clip,
-            max_epochs=config.training.max_epochs,
-            accelerator="auto",
-            devices="auto",
-            log_every_n_steps=config.logging.log_every_n_steps,
-            fast_dev_run=config.fast_dev_run,
-            check_val_every_n_epoch=1,
-        ),
-        checkpoint_callback,
+    trainer = Trainer(
+        logger=logger,
+        callbacks=callbacks,
+        enable_checkpointing=checkpoint,
+        gradient_clip_val=config.training.gradient_clip,
+        max_epochs=config.training.max_epochs,
+        accelerator="auto",
+        devices="auto",
+        log_every_n_steps=config.logging.log_every_n_steps,
+        fast_dev_run=config.fast_dev_run,
+        check_val_every_n_epoch=1,
     )
+    return trainer
 
 
 def make_architecture(
@@ -175,6 +162,7 @@ def make_architecture(
     output_dim: int,
     num_layers: int,
     dropout: float,
+    # bidirectional: bool,
 ):
     match method:
         case "rnn":
@@ -184,6 +172,7 @@ def make_architecture(
                 hidden_dim=hidden_dim,
                 num_layers=num_layers,
                 dropout=dropout,
+                # bidirectional=bidirectional,
             )
         case "mlp":
             hidden_channels = [hidden_dim] * num_layers
@@ -203,6 +192,7 @@ def make_model(
     output_dim: int,
     num_layers: int,
     dropout: float,
+    # bidirectional: bool,
     lr: float,
     weight_decay: float,
     momentum: float,
@@ -216,6 +206,7 @@ def make_model(
         output_dim=output_dim,
         num_layers=num_layers,
         dropout=dropout,
+        # bidirectional=bidirectional,
     )
     criterion = nn.CrossEntropyLoss()
     optimizer = SGD(

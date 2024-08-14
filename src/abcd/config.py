@@ -10,11 +10,10 @@ class Splits(BaseModel):
 
 
 class Raw(BaseModel):
-    # cbcl: Path
     dataset: Path
     metadata: Path
     features: Path
-    splits: Splits
+    splits: Path
 
 
 class Results(BaseModel):
@@ -115,7 +114,6 @@ class Config(BaseModel):
     verbose: bool
     n_trials: int
     join_on: list[str]
-    target: str
     filepaths: Filepaths
     preprocess: Preprocess
     features: Features
@@ -125,7 +123,8 @@ class Config(BaseModel):
     model: Model
 
 
-def update_paths(config: Config, new_path: Path):
+def update_paths(config: Config, analysis: str):
+    new_path = "data/analyses" / Path(analysis)
     analytic = deepcopy(config.filepaths.data.analytic.model_dump())
     for name, path in analytic.items():
         new_filepath = new_path / path
