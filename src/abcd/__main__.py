@@ -11,11 +11,7 @@ from tqdm import tqdm
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
 from abcd.importance import make_shap
-from abcd.metadata import make_subject_metadata
-from abcd.preprocess import (
-    generate_data,
-    get_dataset,
-)
+from abcd.preprocess import get_dataset
 from abcd.config import Config, update_paths
 from abcd.model import make_model, make_trainer
 from abcd.plots import plot
@@ -26,32 +22,21 @@ from abcd.utils import cleanup_checkpoints
 analyses = [
     # "by_year",
     # "questions",
-    "questions_symptoms",
-    "all",
-    "questions_brain",
-    "symptoms",
+    # "questions_brain",
+    # "symptoms",
+    # "questions_symptoms",
+    # "all",
+    "autoregressive",
 ]
-
-
-def make_config():
-    with open("config.toml", "rb") as f:
-        return Config(**load(f))
 
 
 def main():
     pl.Config(tbl_cols=14)
     set_config(transform_output="polars")
-    config = make_config()
-    seed_everything(config.random_seed)
-    if config.regenerate:
-        update_paths(config, analysis="metadata")
-        df = generate_data(config=config)
-        df.write_csv(config.filepaths.data.raw.dataset)
-        splits = get_dataset(analysis="metadata", config=config)
-        metadata = make_subject_metadata(splits=splits)
-        metadata.write_csv(config.filepaths.data.raw.metadata)
     for analysis in tqdm(analyses):
-        config = make_config()
+        with open("config.toml", "rb") as f:
+            config = Config(**load(f))
+        seed_everything(config.random_seed)
         update_paths(config, analysis=analysis)
         splits = get_dataset(analysis=analysis, config=config)
         data_module = ABCDDataModule(
@@ -60,7 +45,7 @@ def main():
             num_workers=cpu_count(),
             dataset_class=RNNDataset,
         )
-        input_dim = splits["train"].shape[-1] - 3
+        input_dim = 1 if analysis == "autoregressive" else splits["train"].shape[-1] - 2
         if config.tune:
             study = tune(
                 config=config,
@@ -71,7 +56,6 @@ def main():
         else:
             with open(config.filepaths.data.results.study, "rb") as f:
                 study: Study = pickle.load(f)
-        print(config.filepaths.data.results.study)
         print(study.best_params)
         checkpoint_path = (
             None if config.refit_best else config.filepaths.data.results.checkpoints

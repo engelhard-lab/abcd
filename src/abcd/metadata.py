@@ -147,12 +147,5 @@ def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
             pl.col("Age").truediv(12).round(0).cast(pl.Int32),
             pl.col("ADI quartile").qcut(quantiles=4, labels=["1", "2", "3", "4"]),
         )
-        # .with_columns(pl.col("Sex", "Race").forward_fill().over("Subject ID"))
         .with_columns(cs.numeric().cast(pl.Int32))
-        # .sort(
-        #     pl.col("Split").cast(pl.Enum(["train", "val", "test"])),
-        #     "Subject ID",
-        #     "Measurement",
-        #     descending=False,
-        # )
     )

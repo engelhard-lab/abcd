@@ -11,7 +11,6 @@ def make_tensor_dataset(dataset: pl.DataFrame):
         "src_subject_id", maintain_order=True, include_key=False
     ):
         label = subject.drop_in_place("y_{t+1}")
-        subject.drop_in_place("y_t")
         label = tensor(label.to_numpy()).float()
         features = tensor(subject.to_numpy()).float()
         data.append((features, label))

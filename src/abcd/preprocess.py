@@ -1,18 +1,24 @@
 from collections import defaultdict
+from tomllib import load
 from typing import Callable
+from sklearn import set_config
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import FunctionTransformer, make_pipeline
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 from sklearn.decomposition import FactorAnalysis
 import polars as pl
-from polars.type_aliases import JoinStrategy
 import polars.selectors as cs
 
 from functools import partial, reduce
 
-from abcd.config import Config
-from abcd.metadata import make_variable_metadata, EVENTS, EVENT_MAPPING
+from abcd.config import Config, update_paths
+from abcd.metadata import (
+    make_subject_metadata,
+    make_variable_metadata,
+    EVENTS,
+    EVENT_MAPPING,
+)
 
 
 def drop_null_columns(features: pl.DataFrame, cutoff=0.25) -> pl.DataFrame:
@@ -23,13 +29,12 @@ def drop_null_columns(features: pl.DataFrame, cutoff=0.25) -> pl.DataFrame:
     )
 
 
-def join_dataframes(
-    dfs: list[pl.DataFrame], join_on: list[str], how: JoinStrategy
-) -> pl.DataFrame:
+def join_dataframes(dfs: list[pl.DataFrame], join_on: list[str]) -> pl.DataFrame:
     return reduce(
         lambda left, right: left.join(
             right,
-            how=how,
+            how="full",
+            coalesce=True,
             on=join_on,
         ),
         dfs,
@@ -136,7 +141,7 @@ def generate_data(config: Config):
     datasets = get_datasets(config=config)
     make_variable_metadata(dfs=datasets, features=config.features)
     return (
-        join_dataframes(dfs=datasets, join_on=config.join_on, how="outer_coalesce")
+        join_dataframes(dfs=datasets, join_on=config.join_on)
         .pipe(
             filter_data,
             label_columns=config.features.mh_p_cbcl.columns,
@@ -165,8 +170,10 @@ def get_brain_features(config: Config):
 def get_features(df: pl.DataFrame, analysis: str, config: Config):
     brain_features = get_brain_features(config)
     include = []
-    exclude = [config.join_on[0], "y_t", "y_{t+1}", "race_ethnicity"]
+    exclude = [config.join_on[0], "race_ethnicity"]
     match analysis:
+        case "metadata":
+            exclude = exclude[:-1]
         case "questions_brain":
             exclude += config.features.mh_p_cbcl.columns
         case "questions" | "by_year":
@@ -175,13 +182,12 @@ def get_features(df: pl.DataFrame, analysis: str, config: Config):
             exclude += brain_features
         case "symptoms":
             include += config.features.mh_p_cbcl.columns
-        case "metadata":
-            exclude = exclude[:-1]
-        case "all":
+        case "all" | "autoregressive":
             pass
         case _:
             raise ValueError(f"Invalid analysis: {analysis}")
-    return df.select(cs.by_name(include) | cs.exclude(exclude)).columns
+    df = df.select(cs.by_name(include) | cs.exclude(exclude))
+    return df.columns
 
 
 def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: int):
@@ -199,17 +205,25 @@ def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: in
 
 
 def format_labels(
-    splits: dict[str, pl.DataFrame], group: str, observation: str
+    splits: dict[str, pl.DataFrame], group: str, observation: str, analysis: str
 ) -> dict[str, pl.DataFrame]:
-    shift_y = pl.col("y_t").shift(-1).over(group)
+    shift_y = pl.col("y_t").shift(-1).over(group).alias("y_{t+1}")
     columns = (group, observation, "y_t", "y_{t+1}")
-    return {
-        name: split.rename({"factoranalysis0": "y_t"})
-        .with_columns(shift_y.alias("y_{t+1}"))
-        .select(pl.col(columns), pl.exclude(columns))
-        .drop_nulls(subset=["y_{t+1}"])
-        for name, split in splits.items()
-    }
+    for name, split in splits.items():
+        split = (
+            split.rename({"factoranalysis0": "y_t"})
+            .with_columns(shift_y)
+            .select(pl.col(columns), pl.exclude(columns))
+            .drop_nulls(subset=["y_{t+1}"])
+        )
+        if analysis == "metadata":
+            pass
+        elif analysis == "autoregressive":
+            split = split.select(group, "y_t", "y_{t+1}")
+        else:
+            split = split.drop("y_t")
+        splits[name] = split
+    return splits
 
 
 def transform_by_year(
@@ -297,7 +311,9 @@ def transform_data(
         splits["train"] = transformer.fit_transform(splits["train"])
         splits["val"] = transformer.transform(splits["val"])
         splits["test"] = transformer.transform(splits["test"])
-    splits = format_labels(splits=splits, group=group, observation=observation)
+    splits = format_labels(
+        splits=splits, group=group, observation=observation, analysis=analysis
+    )
     return splits
 
 
@@ -324,10 +340,22 @@ def get_dataset(analysis: str, config: Config):
         splits["train"].write_csv(config.filepaths.data.analytic.train)
         splits["val"].write_csv(config.filepaths.data.analytic.val)
         splits["test"].write_csv(config.filepaths.data.analytic.test)
-        return splits
     else:
-        return {
+        splits = {
             "train": pl.read_csv(config.filepaths.data.analytic.train),
             "val": pl.read_csv(config.filepaths.data.analytic.val),
             "test": pl.read_csv(config.filepaths.data.analytic.test),
         }
+    return splits
+
+
+if __name__ == "__main__":
+    with open("config.toml", "rb") as f:
+        config = Config(**load(f))
+    df = generate_data(config=config)
+    df.write_csv(config.filepaths.data.raw.dataset)
+    set_config(transform_output="polars")
+    update_paths(config, analysis="metadata")
+    splits = get_dataset(analysis="metadata", config=config)
+    metadata = make_subject_metadata(splits=splits)
+    metadata.write_csv(config.filepaths.data.raw.metadata)

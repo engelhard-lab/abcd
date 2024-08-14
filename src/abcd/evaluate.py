@@ -11,6 +11,7 @@ from torchmetrics.classification import (
 )
 from torchmetrics.wrappers import BootStrapper
 from torchmetrics.functional import roc, precision_recall_curve
+import numpy as np
 
 from abcd.config import Config
 from abcd.dataset import ABCDDataModule
@@ -22,17 +23,23 @@ OUTPUT_COLUMNS = ["1", "2", "3", "4"]
 def make_predictions(config: Config, model: Network, data_module: ABCDDataModule):
     trainer = make_trainer(config, checkpoint=False)
     predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
-    outputs, _ = zip(*predictions)
+    outputs, labels = zip(*predictions)
     outputs = torch.concat(outputs)
-    metadata = pl.read_csv(config.filepaths.data.raw.metadata)
+    labels = torch.concat(labels)
+    metadata = pl.read_csv(config.filepaths.data.raw.metadata).with_columns(
+        pl.col("Quartile at t", "Quartile at t+1").add(1)
+    )
     test_metadata = metadata.filter(pl.col("Split").eq("test"))
-    outputs = pl.DataFrame(outputs.cpu().numpy(), schema=OUTPUT_COLUMNS)
-    return pl.concat([test_metadata, outputs], how="horizontal")
+    df = pl.DataFrame(
+        np.column_stack([outputs.cpu().numpy(), labels.cpu().numpy()]),
+        schema=OUTPUT_COLUMNS + ["label"],
+    )
+    return pl.concat([test_metadata, df], how="horizontal")
 
 
 def get_predictions(df: pl.DataFrame):
     outputs = torch.tensor(df.select(OUTPUT_COLUMNS).to_numpy()).float()
-    labels = torch.tensor(df["Quartile at t+1"].to_numpy()).long()
+    labels = torch.tensor(df["label"].to_numpy()).long()
     return outputs, labels
 
 
@@ -49,12 +56,12 @@ def make_curve(df: pl.DataFrame, curve: Callable, name: str):
                     "Curve": "Model",
                     "Variable": df["Variable"][0],
                     "Group": df["Group"][0],
-                    "Quartile at t+1": label,
+                    "Quartile at t+1": quartile,
                     "x": x_i.numpy(),
                     "y": y_i.numpy(),
                 }
             )
-            for label, x_i, y_i in zip(OUTPUT_COLUMNS, x, y)
+            for quartile, x_i, y_i in zip(OUTPUT_COLUMNS, x, y)
         ]
     )
 
@@ -117,7 +124,6 @@ def make_prevalence(df: pl.DataFrame):
             pl.lit("PR").alias("Metric"),
             pl.lit("Baseline").alias("Curve"),
             pl.lit([0, 1]).alias("x"),
-            # pl.col("Quartile at t+1").cast(pl.Int32).add(1),
         )
     )
     return df
@@ -171,7 +177,7 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
     else:
         df = pl.read_csv(config.filepaths.data.results.predictions)
     df = df.with_columns(
-        pl.when(pl.col("Quartile at t").eq(3))
+        pl.when(pl.col("Quartile at t").eq(4))
         .then(pl.lit("{4}"))
         .otherwise(pl.lit("{1,2,3}"))
         .alias("Quartile subset")
@@ -185,7 +191,7 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         "ADI quartile",
     ]
     df = df.melt(
-        id_vars=OUTPUT_COLUMNS + ["Quartile at t", "Quartile at t+1"],
+        id_vars=OUTPUT_COLUMNS + ["label", "Quartile at t", "Quartile at t+1"],
         value_vars=variables,
         variable_name="Variable",
         value_name="Group",
