@@ -99,11 +99,19 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
     df = (
         (
             variables.join(questions, on=["table", "variable"], how="left")
-            .with_columns(
-                format_questions(),
-                pl.col("dataset").str.replace_all("_", " "),
-                pl.col("response").str.replace_all("\\s*/\\s*[^;]+", ""),
-            )
+            # .with_columns(
+            #     # format_questions(),
+            #     pl.col("dataset").str.replace_all("_", " "),
+            #     pl.col("response").str.replace_all("\\s*/\\s*[^;]+", ""),
+            # )
+            # .with_columns(
+            #     pl.col("response")
+            #     .str.replace(
+            #         " No deseo responder \\| If Separated| No lo sé| No lo s√É¬©| Niego contestar| Sí",
+            #         "",
+            #     )
+            #     .str.replace("No No", "No")
+            # )
             .with_columns(
                 captialize("dataset"),
                 captialize("question"),
@@ -116,6 +124,7 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
         .unique(subset=["variable"])
         .sort("dataset", "respondent", "variable")
     )
+    print(df)
     df.write_csv("data/variables.csv")
 
 

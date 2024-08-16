@@ -1,8 +1,8 @@
 fast_dev_run = false
 random_seed = 42
 regenerate = false
-tune = false
-refit_best = true
+tune = true
+refit_best = false
 log = false
 predict = true
 evaluate = true
@@ -42,7 +42,7 @@ train_size = 0.8
 
 
 [training]
-batch_size = 2048
+batch_size = 512
 max_epochs = 200
 gradient_clip = 1.0
 

@@ -1,4 +1,3 @@
-from multiprocessing import cpu_count
 from tomllib import load
 import pickle
 
@@ -8,7 +7,8 @@ from sklearn import set_config
 import polars as pl
 from tqdm import tqdm
 
-from abcd.dataset import ABCDDataModule, RNNDataset
+from abcd.dataset import make_data_module
+from abcd.embed import make_data
 from abcd.evaluate import evaluate_model
 from abcd.importance import make_shap
 from abcd.preprocess import get_dataset
@@ -18,6 +18,7 @@ from abcd.plots import plot
 from abcd.tables import make_tables
 from abcd.tune import tune
 from abcd.utils import cleanup_checkpoints
+import os
 
 analyses = [
     # "by_year",
@@ -26,11 +27,15 @@ analyses = [
     # "symptoms",
     # "questions_symptoms",
     # "all",
-    "autoregressive",
+    # "autoregressive",
+    "embedding",
 ]
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 def main():
+    method = "embedding"
     pl.Config(tbl_cols=14)
     set_config(transform_output="polars")
     for analysis in tqdm(analyses):
@@ -38,13 +43,9 @@ def main():
             config = Config(**load(f))
         seed_everything(config.random_seed)
         update_paths(config, analysis=analysis)
-        splits = get_dataset(analysis=analysis, config=config)
-        data_module = ABCDDataModule(
-            **splits,
-            batch_size=config.training.batch_size,
-            num_workers=cpu_count(),
-            dataset_class=RNNDataset,
-        )
+        # splits = get_dataset(analysis=analysis, config=config)
+        splits = make_data()
+        data_module = make_data_module(method=method, splits=splits, config=config)
         input_dim = 1 if analysis == "autoregressive" else splits["train"].shape[-1] - 2
         if config.tune:
             study = tune(
@@ -61,6 +62,7 @@ def main():
             None if config.refit_best else config.filepaths.data.results.checkpoints
         )
         model = make_model(
+            method=method,
             input_dim=input_dim,
             output_dim=config.preprocess.n_quantiles,
             momentum=config.optimizer.momentum,
@@ -69,7 +71,7 @@ def main():
             **study.best_params,
         )
         if config.refit_best:
-            trainer = make_trainer(config=config, checkpoint=True)
+            trainer, _ = make_trainer(config=config)
             trainer.fit(model=model, datamodule=data_module)
             cleanup_checkpoints(
                 checkpoint_dir=config.filepaths.data.results.checkpoints, mode="min"

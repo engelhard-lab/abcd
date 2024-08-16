@@ -1,6 +1,6 @@
 from pathlib import Path
-from torch import nn, isnan
-from torch.optim import SGD
+from torch import nn, isnan, Tensor, load
+from torch.optim.sgd import SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision.ops import MLP
 from lightning import LightningModule
@@ -11,10 +11,7 @@ from lightning.pytorch.callbacks import (
 )
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import Trainer
-from torchmetrics.functional import (
-    auroc,
-    # average_precision,
-)
+from torchmetrics.functional import auroc
 from abcd.config import Config
 from abcd.utils import get_best_checkpoint
 
@@ -27,7 +24,6 @@ class RNN(nn.Module):
         hidden_dim,
         num_layers,
         dropout,
-        # , bidirectional
     ):
         super().__init__()
         self.rnn = nn.RNN(
@@ -37,16 +33,43 @@ class RNN(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             nonlinearity="tanh",
-            # bidirectional=bidirectional,
         )
-        # if bidirectional:
-        #     hidden_dim = hidden_dim * 2
         self.fc = nn.Linear(in_features=hidden_dim, out_features=output_dim)
 
     def forward(self, x):
         out, _ = self.rnn(x)
         out = self.fc(out)
         return out
+
+
+class EmbeddingModel(nn.Module):
+    def __init__(
+        self,
+        embeddings: Tensor,
+        output_dim: int,
+        dropout: float,
+        freeze: bool,
+        refine: bool,
+    ):
+        super().__init__()
+        self.refine = refine
+        self.embedding_layer = nn.Embedding.from_pretrained(
+            embeddings, padding_idx=0, freeze=freeze
+        )
+        if self.refine:
+            self.parallel_mlp = MLP(
+                in_channels=embeddings.shape[-1],
+                hidden_channels=[embeddings.shape[-1]],
+                dropout=dropout,
+            )
+        self.fc = nn.Linear(in_features=embeddings.shape[-1], out_features=output_dim)
+
+    def forward(self, x: Tensor):
+        x = self.embedding_layer(x)
+        if self.refine:
+            x = self.parallel_mlp(x)
+        x = x.mean(dim=2)
+        return self.fc(x)  # self.mlp(x)
 
 
 def make_metrics(step, loss, outputs, labels) -> dict:
@@ -58,6 +81,15 @@ def make_metrics(step, loss, outputs, labels) -> dict:
             labels,
             task="multiclass",
             num_classes=outputs.shape[-1],
+        )
+        print(
+            auroc(
+                outputs,
+                labels,
+                task="multiclass",
+                num_classes=outputs.shape[-1],
+                average="none",
+            )
         )
         metrics.update({"auroc": auroc_score})
     return metrics
@@ -119,22 +151,18 @@ class Network(LightningModule):
         return {"optimizer": self.optimizer, "lr_scheduler": scheduler_config}
 
 
-def make_trainer(config: Config, checkpoint: bool) -> Trainer:
-    early_stopping = EarlyStopping(monitor="val_loss", mode="min", patience=4)
-    callbacks = [early_stopping, RichProgressBar()]
-    if checkpoint:
-        checkpoint_callback = ModelCheckpoint(
-            dirpath=config.filepaths.data.results.checkpoints,
-            filename="{epoch}_{step}_{val_loss:.3f}",
-            save_top_k=1,
-            verbose=config.verbose,
-            monitor="val_loss",
-            mode="min",
-            every_n_train_steps=config.logging.checkpoint_every_n_steps,
-        )
-        callbacks.append(
-            checkpoint_callback,
-        )
+def make_trainer(config: Config) -> tuple[Trainer, ModelCheckpoint]:
+    early_stopping = EarlyStopping(monitor="val_loss", mode="min", patience=3)
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=config.filepaths.data.results.checkpoints,
+        filename="{epoch}_{step}_{val_loss:.4f}",
+        save_top_k=1,
+        verbose=config.verbose,
+        monitor="val_loss",
+        mode="min",
+        every_n_train_steps=config.logging.checkpoint_every_n_steps,
+    )
+    callbacks = [early_stopping, RichProgressBar(), checkpoint_callback]
     logger = (
         TensorBoardLogger(save_dir=config.filepaths.data.results.logs)
         if config.log
@@ -143,7 +171,7 @@ def make_trainer(config: Config, checkpoint: bool) -> Trainer:
     trainer = Trainer(
         logger=logger,
         callbacks=callbacks,
-        enable_checkpointing=checkpoint,
+        # enable_checkpointing=checkpoint,
         gradient_clip_val=config.training.gradient_clip,
         max_epochs=config.training.max_epochs,
         accelerator="auto",
@@ -152,7 +180,7 @@ def make_trainer(config: Config, checkpoint: bool) -> Trainer:
         fast_dev_run=config.fast_dev_run,
         check_val_every_n_epoch=1,
     )
-    return trainer
+    return trainer, checkpoint_callback
 
 
 def make_architecture(
@@ -162,7 +190,8 @@ def make_architecture(
     output_dim: int,
     num_layers: int,
     dropout: float,
-    # bidirectional: bool,
+    freeze: bool,
+    refine: bool,
 ):
     match method:
         case "rnn":
@@ -172,7 +201,6 @@ def make_architecture(
                 hidden_dim=hidden_dim,
                 num_layers=num_layers,
                 dropout=dropout,
-                # bidirectional=bidirectional,
             )
         case "mlp":
             hidden_channels = [hidden_dim] * num_layers
@@ -181,6 +209,15 @@ def make_architecture(
                 hidden_channels=hidden_channels + [output_dim],
                 dropout=dropout,
             )
+        case "embedding":
+            embeddings = load("data/embeddings.pt")
+            return EmbeddingModel(
+                embeddings=embeddings,
+                output_dim=output_dim,
+                dropout=dropout,
+                freeze=freeze,
+                refine=refine,
+            )
         case _:
             raise ValueError(f"Invalid method '{method}'. Choose from: 'rnn' or 'mlp'")
 
@@ -188,15 +225,16 @@ def make_architecture(
 def make_model(
     method: str,
     input_dim: int,
-    hidden_dim: int,
     output_dim: int,
-    num_layers: int,
-    dropout: float,
-    # bidirectional: bool,
     lr: float,
     weight_decay: float,
     momentum: float,
     nesterov: bool,
+    hidden_dim: int = 128,
+    num_layers: int = 2,
+    dropout: float = 0.0,
+    freeze: bool = False,
+    refine: bool = True,
     checkpoints: Path | None = None,
 ):
     model = make_architecture(
@@ -206,7 +244,8 @@ def make_model(
         output_dim=output_dim,
         num_layers=num_layers,
         dropout=dropout,
-        # bidirectional=bidirectional,
+        freeze=freeze,
+        refine=refine,
     )
     criterion = nn.CrossEntropyLoss()
     optimizer = SGD(
