@@ -1,6 +1,6 @@
 from pathlib import Path
 from torch import nn, isnan
-from torch.optim import SGD
+from torch.optim.sgd import SGD
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision.ops import MLP
 from lightning import LightningModule
@@ -11,10 +11,7 @@ from lightning.pytorch.callbacks import (
 )
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import Trainer
-from torchmetrics.functional import (
-    auroc,
-    # average_precision,
-)
+from torchmetrics.functional import auroc
 from abcd.config import Config
 from abcd.utils import get_best_checkpoint
 
@@ -27,7 +24,6 @@ class RNN(nn.Module):
         hidden_dim,
         num_layers,
         dropout,
-        # , bidirectional
     ):
         super().__init__()
         self.rnn = nn.RNN(
@@ -37,10 +33,7 @@ class RNN(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             nonlinearity="tanh",
-            # bidirectional=bidirectional,
         )
-        # if bidirectional:
-        #     hidden_dim = hidden_dim * 2
         self.fc = nn.Linear(in_features=hidden_dim, out_features=output_dim)
 
     def forward(self, x):
@@ -162,7 +155,6 @@ def make_architecture(
     output_dim: int,
     num_layers: int,
     dropout: float,
-    # bidirectional: bool,
 ):
     match method:
         case "rnn":
@@ -172,7 +164,6 @@ def make_architecture(
                 hidden_dim=hidden_dim,
                 num_layers=num_layers,
                 dropout=dropout,
-                # bidirectional=bidirectional,
             )
         case "mlp":
             hidden_channels = [hidden_dim] * num_layers
@@ -192,7 +183,6 @@ def make_model(
     output_dim: int,
     num_layers: int,
     dropout: float,
-    # bidirectional: bool,
     lr: float,
     weight_decay: float,
     momentum: float,
@@ -206,7 +196,6 @@ def make_model(
         output_dim=output_dim,
         num_layers=num_layers,
         dropout=dropout,
-        # bidirectional=bidirectional,
     )
     criterion = nn.CrossEntropyLoss()
     optimizer = SGD(
