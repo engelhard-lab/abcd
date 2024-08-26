@@ -8,16 +8,15 @@ from torchmetrics.classification import (
     MulticlassAveragePrecision,
     MulticlassSpecificityAtSensitivity,
     MulticlassSensitivityAtSpecificity,
+    BinaryAUROC,
+    BinaryAveragePrecision,
 )
 from torchmetrics.wrappers import BootStrapper
 from torchmetrics.functional import roc, precision_recall_curve
-import numpy as np
 
 from abcd.config import Config
 from abcd.dataset import ABCDDataModule
 from abcd.model import Network, make_trainer
-
-OUTPUT_COLUMNS = ["1", "2", "3", "4"]
 
 
 def make_predictions(config: Config, model: Network, data_module: ABCDDataModule):
@@ -30,40 +29,55 @@ def make_predictions(config: Config, model: Network, data_module: ABCDDataModule
         pl.col("Quartile at t", "Quartile at t+1").add(1)
     )
     test_metadata = metadata.filter(pl.col("Split").eq("test"))
-    df = pl.DataFrame(
-        np.column_stack([outputs.cpu().numpy(), labels.cpu().numpy()]),
-        schema=OUTPUT_COLUMNS + ["label"],
-    )
+    df = pl.DataFrame({"output": outputs.cpu().numpy(), "label": labels.cpu().numpy()})
     return pl.concat([test_metadata, df], how="horizontal")
 
 
 def get_predictions(df: pl.DataFrame):
-    outputs = torch.tensor(df.select(OUTPUT_COLUMNS).to_numpy()).float()
+    outputs = torch.tensor(df["output"].to_list()).float()
     labels = torch.tensor(df["label"].to_numpy()).long()
+    if outputs.shape[-1] == 1:
+        outputs = outputs.squeeze(1)
     return outputs, labels
+
+
+def make_curve_df(df, name, quartile, x, y):
+    return pl.DataFrame(
+        {
+            "Metric": name,
+            "Curve": "Model",
+            "Variable": df["Variable"][0],
+            "Group": df["Group"][0],
+            "Quartile at t+1": quartile,
+            "x": x,
+            "y": y,
+        }
+    )
 
 
 def make_curve(df: pl.DataFrame, curve: Callable, name: str):
     outputs, labels = get_predictions(df)
-    x, y, _ = curve(outputs, labels, task="multiclass", num_classes=outputs.shape[-1])
+    if outputs.dim() == 1:
+        task = "binary"
+        num_classes = None
+    else:
+        task = "multiclass"
+        num_classes = outputs.shape[-1]
+    x, y, _ = curve(outputs, labels, task=task, num_classes=num_classes)
     if name == "PR":
         x, y = y, x
-    return pl.concat(
-        [
-            pl.DataFrame(
-                {
-                    "Metric": name,
-                    "Curve": "Model",
-                    "Variable": df["Variable"][0],
-                    "Group": df["Group"][0],
-                    "Quartile at t+1": quartile,
-                    "x": x_i.numpy(),
-                    "y": y_i.numpy(),
-                }
+    if outputs.dim() == 1:
+        df = make_curve_df(df=df, name=name, quartile=4, x=x.numpy(), y=y.numpy())
+    else:
+        dfs = []
+        for quartile, (x_i, y_i) in enumerate(zip(x, y), start=1):
+            quartile = 4 if outputs.dim() == 1 else quartile
+            curve_df = make_curve_df(
+                df=df, name=name, quartile=quartile, x=x_i.numpy(), y=y_i.numpy()
             )
-            for quartile, x_i, y_i in zip(OUTPUT_COLUMNS, x, y)
-        ]
-    )
+            dfs.append(curve_df)
+        df = pl.concat(dfs)
+    return df
 
 
 def bootstrap_metric(metric, outputs, labels, n_bootstraps=1000):
@@ -72,7 +86,9 @@ def bootstrap_metric(metric, outputs, labels, n_bootstraps=1000):
     )
     bootstrap.update(outputs, labels)
     bootstraps = bootstrap.compute()["raw"].cpu().numpy()
-    return pl.DataFrame(bootstraps, schema=OUTPUT_COLUMNS)
+    return pl.DataFrame(bootstraps).rename(
+        lambda x: str(int(x.replace("column_", "")) + 1)
+    )
 
 
 def make_metrics(df: pl.DataFrame):
@@ -87,8 +103,12 @@ def make_metrics(df: pl.DataFrame):
             }
         )
     outputs, labels = get_predictions(df)
-    auroc = MulticlassAUROC(num_classes=outputs.shape[-1], average="none")
-    ap = MulticlassAveragePrecision(num_classes=outputs.shape[-1], average="none")
+    if outputs.dim() == 1:
+        auroc = BinaryAUROC()
+        ap = BinaryAveragePrecision()
+    else:
+        auroc = MulticlassAUROC(num_classes=outputs.shape[-1], average="none")
+        ap = MulticlassAveragePrecision(num_classes=outputs.shape[-1], average="none")
     bootstrapped_auroc = bootstrap_metric(auroc, outputs, labels).with_columns(
         pl.lit("AUROC").alias("Metric")
     )
@@ -173,7 +193,7 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
     config.filepaths.data.results.metrics.mkdir(parents=True, exist_ok=True)
     if config.predict or not config.filepaths.data.results.predictions.is_file():
         df = make_predictions(config=config, model=model, data_module=data_module)
-        df.write_csv(config.filepaths.data.results.predictions)
+        df.write_parquet(config.filepaths.data.results.predictions)
     else:
         df = pl.read_csv(config.filepaths.data.results.predictions)
     df = df.with_columns(
@@ -191,7 +211,7 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         "ADI quartile",
     ]
     df = df.melt(
-        id_vars=OUTPUT_COLUMNS + ["label", "Quartile at t", "Quartile at t+1"],
+        id_vars=["output", "label", "Quartile at t", "Quartile at t+1"],
         value_vars=variables,
         variable_name="Variable",
         value_name="Group",
@@ -207,7 +227,6 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         prevalence.select(["Variable", "Group", "Quartile at t+1", "y"]),
         on=["Variable", "Group", "Quartile at t+1"],
     ).rename({"y": "Prevalence"})
-    print(metrics)
     metrics.write_csv(config.filepaths.data.results.metrics / "metrics.csv")
     pr_curve = grouped_df.map_groups(
         partial(make_curve, curve=precision_recall_curve, name="PR")
@@ -219,7 +238,7 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         how="diagonal_relaxed",
     ).select(["Metric", "Curve", "Variable", "Group", "Quartile at t+1", "x", "y"])
     curves.write_csv(config.filepaths.data.results.metrics / "curves.csv")
-    sens_spec = calc_sensitivity_and_specificity(df=df)
-    sens_spec.write_csv(
-        config.filepaths.data.results.metrics / "sensitivity_specificity.csv"
-    )
+    # sens_spec = calc_sensitivity_and_specificity(df=df)
+    # sens_spec.write_csv(
+    #     config.filepaths.data.results.metrics / "sensitivity_specificity.csv"
+    # )

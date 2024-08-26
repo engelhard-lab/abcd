@@ -169,24 +169,24 @@ def get_brain_features(config: Config):
 
 def get_features(df: pl.DataFrame, analysis: str, config: Config):
     brain_features = get_brain_features(config)
-    include = []
     exclude = [config.join_on[0], "race_ethnicity"]
     match analysis:
         case "metadata":
-            exclude = exclude[:-1]
+            df = df.select(cs.exclude(exclude[:-1]))
         case "questions_brain":
-            exclude += config.features.mh_p_cbcl.columns
-        case "questions" | "by_year":
-            exclude += config.features.mh_p_cbcl.columns + brain_features
+            df = df.select(cs.exclude(exclude + config.features.mh_p_cbcl.columns))
+        case "questions" | "by_year" | "questions_autoregressive" | "binary":
+            df = df.select(
+                cs.exclude(exclude + config.features.mh_p_cbcl.columns + brain_features)
+            )
         case "questions_symptoms":
-            exclude += brain_features
+            df = df.select(cs.exclude(exclude + brain_features))
         case "symptoms":
-            include += config.features.mh_p_cbcl.columns
+            df = df.select(config.features.mh_p_cbcl.columns)
         case "all" | "autoregressive":
-            pass
+            df = df
         case _:
             raise ValueError(f"Invalid analysis: {analysis}")
-    df = df.select(cs.by_name(include) | cs.exclude(exclude))
     return df.columns
 
 
@@ -205,10 +205,10 @@ def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: in
 
 
 def format_labels(
-    splits: dict[str, pl.DataFrame], group: str, observation: str, analysis: str
+    splits: dict[str, pl.DataFrame], group: str, analysis: str
 ) -> dict[str, pl.DataFrame]:
     shift_y = pl.col("y_t").shift(-1).over(group).alias("y_{t+1}")
-    columns = (group, observation, "y_t", "y_{t+1}")
+    columns = (group, "y_t", "y_{t+1}")
     for name, split in splits.items():
         split = (
             split.rename({"factoranalysis0": "y_t"})
@@ -216,12 +216,17 @@ def format_labels(
             .select(pl.col(columns), pl.exclude(columns))
             .drop_nulls(subset=["y_{t+1}"])
         )
-        if analysis == "metadata":
-            pass
-        elif analysis == "autoregressive":
-            split = split.select(group, "y_t", "y_{t+1}")
-        else:
-            split = split.drop("y_t")
+        match analysis:
+            case "metadata" | "questions_autoregressive":
+                pass
+            case "autoregressive":
+                split = split.select(group, "y_t", "y_{t+1}")
+            # case "binary":
+            #     split = split.with_columns(
+            #         (pl.col("y_{t+1}").eq(3)).cast(pl.Int32).alias("y_{t+1}")
+            #     ).drop("y_t")
+            case _:
+                split = split.drop("y_t")
         splits[name] = split
     return splits
 
@@ -257,9 +262,7 @@ def make_transformer(
     if analysis == "metadata":
         feature_pipeline = identity_transformer
     else:
-        feature_pipeline = make_pipeline(
-            StandardScaler(),
-        )
+        feature_pipeline = make_pipeline(StandardScaler())
     label_pipeline = make_pipeline(
         StandardScaler(),
         FactorAnalysis(n_components=1),
@@ -278,7 +281,7 @@ def make_transformer(
 
 
 def impute_by_time_point(df: pl.DataFrame):
-    return df.with_columns(pl.all().fill_null(pl.all().median()).over("eventname"))
+    return df.with_columns(pl.all().fill_null(strategy="mean").over("eventname"))
 
 
 def transform_data(
@@ -311,9 +314,7 @@ def transform_data(
         splits["train"] = transformer.fit_transform(splits["train"])
         splits["val"] = transformer.transform(splits["val"])
         splits["test"] = transformer.transform(splits["test"])
-    splits = format_labels(
-        splits=splits, group=group, observation=observation, analysis=analysis
-    )
+    splits = format_labels(splits=splits, group=group, analysis=analysis)
     return splits
 
 

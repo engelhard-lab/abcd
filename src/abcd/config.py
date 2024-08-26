@@ -104,7 +104,6 @@ class Config(BaseModel):
     regenerate: bool
     predict: bool
     tune: bool
-    refit_best: bool
     log: bool
     evaluate: bool
     shap: bool

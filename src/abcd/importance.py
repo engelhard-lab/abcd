@@ -7,6 +7,8 @@ import polars as pl
 from tqdm import tqdm
 from captum.attr import GradientShap
 
+from abcd.config import Config
+
 
 def predict(x, model):
     output = model(x)
@@ -37,15 +39,19 @@ def regress_shap_values(shap_values, X):
     return df
 
 
-def make_shap(model, data_module):
+def make_shap(config: Config, model, data_module, analysis: str):
     test_dataloader = iter(data_module.test_dataloader())
     X, _ = next(test_dataloader)
-    background, _ = next(test_dataloader)
-    shap_values = make_shap_values(
-        model, X, background, columns=data_module.feature_columns
+    val_dataloader = iter(data_module.val_dataloader())
+    background, _ = next(val_dataloader)
+    feature_names = (
+        pl.read_csv(config.filepaths.data.analytic.test)
+        .drop(["src_subject_id", "y_t", "y_{t+1}"])
+        .columns
     )
-    shap_values.write_csv("data/results/shap_values.csv")
-    features = pl.DataFrame(X.flatten(0, 1).numpy(), schema=data_module.feature_columns)
+    print(feature_names)
+    shap_values = make_shap_values(model, X, background, columns=feature_names)
+    shap_values.write_csv(f"data/analyses/{analysis}/results/shap_values.csv")
 
     # sex = features["demo_sex_v2_1"] > 0
     # male_shap_values = shap_values.filter(sex).with_columns(pl.lit("Male").alias("Sex"))
@@ -54,6 +60,6 @@ def make_shap(model, data_module):
     # )
     # sex_coefs = pl.concat([male_shap_values, female_shap_values])
     # sex_coefs.write_csv("data/results/sex_shap_coefs.csv")
-
+    features = pl.DataFrame(X.flatten(0, 1).numpy(), schema=feature_names)
     df = regress_shap_values(shap_values, X=features)
-    df.write_csv("data/results/shap_coefs.csv")
+    df.write_csv(f"data/analyses/{analysis}/results/shap_coefficients.csv")

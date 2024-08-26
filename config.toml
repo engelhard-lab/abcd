@@ -1,8 +1,7 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = false
-tune = false
-refit_best = true
+regenerate = true
+tune = true
 log = false
 predict = true
 evaluate = true
@@ -10,9 +9,8 @@ shap = false
 plot = false
 tables = false
 verbose = false
-n_trials = 32
+n_trials = 2
 join_on = ["src_subject_id", "eventname"]
-
 
 [filepaths]
 tables = "data/tables/"
@@ -32,14 +30,12 @@ metrics = "results/metrics/"
 checkpoints = "results/checkpoints/"
 study = "results/study.pkl"
 logs = "results/lightning_logs"
-predictions = "results/predictions.csv"
-
+predictions = "results/predictions.parquet"
 
 [preprocess]
 n_neighbors = 5
 n_quantiles = 4
 train_size = 0.8
-
 
 [training]
 batch_size = 2048
@@ -59,7 +55,7 @@ high = 1e-2
 log = true
 
 [model]
-hidden_dim = [32, 64, 128, 256]
+hidden_dim = [64, 128, 256, 512]
 [model.dropout]
 low = 0.0
 high = 0.75

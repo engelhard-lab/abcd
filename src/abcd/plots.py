@@ -14,16 +14,19 @@ from abcd.config import Config
 FORMAT = "pdf"
 
 
-def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = None):
+def shap_plot(analysis, metadata, textwrap_width):
     n_display = 20
     plt.figure(figsize=(30, 14))
     metadata = metadata.rename({"dataset": "Dataset"}).with_columns(
         (pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset")
     )
-    df = pl.read_csv("data/results/shap_coefs.csv")
+    # df = pl.read_csv("data/results/shap_coefs.csv")
+    shap_coefs = pl.read_csv(f"data/analyses/{analysis}/results/shap_coefficients.csv")
     df = shap_coefs.join(other=metadata, on="variable", how="inner")
-    if subset:
-        df = df.filter(pl.col("Dataset").is_in(subset))
+    # .filter(
+    #     pl.col("variable").is_in(shap_coefs.columns)
+    # )
+    print(df)
     top_questions = (
         df.group_by("question")
         .agg(pl.col("value").abs().mean())
@@ -37,7 +40,7 @@ def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = N
     )
     sns.set_context("paper", font_scale=2.5)
     g = sns.pointplot(
-        data=df,
+        data=df.to_pandas(),
         x="value",
         y="question",
         hue="Dataset",
@@ -64,11 +67,7 @@ def shap_plot(shap_coefs, metadata, textwrap_width, subset: list[str] | None = N
     # ax2.set_ylabel("Response")
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
-    if subset:
-        postfix = "_" + "_".join(subset)
-    else:
-        postfix = ""
-    plt.savefig(f"data/plots/shap_coefs{postfix}.{FORMAT}", format=FORMAT)
+    plt.savefig(f"data/plots/shap_coefs_{analysis}.{FORMAT}", format=FORMAT)
 
 
 def format_shap_df(df: pl.DataFrame, column_mapping):
@@ -195,21 +194,23 @@ def format_shap_values(shap_values_list, X, sex):
 
 
 def quartile_curves():
-    df = pl.read_csv("data/results/curves.csv")
+    df = pl.read_csv("data/tables/analyses_curves.csv")
     df = (
         df.filter(
-            (pl.col("Group").eq("{1,2,3,4}") | pl.col("Next quartile").eq(4))
+            pl.col("Quartile at t+1").eq(4)
             & pl.col("Variable").eq("Quartile subset")
+            & pl.col("Analysis").is_in(["Symptoms", "Questions"])
+            & pl.col("Curve").eq("Model")
         )
         .with_columns(pl.col("Metric").cast(pl.Enum(["ROC", "PR"])))
         .sort("Metric")
     )
     g = sns.relplot(
-        data=df,
+        data=df.to_pandas(),
         x="x",
         y="y",
-        hue="Next quartile",
-        style="Curve",
+        hue="Analysis",
+        # style="Curve",
         row="Metric",
         col="Group",
         kind="line",
@@ -219,7 +220,10 @@ def quartile_curves():
     )
     g.set_titles("")
     labels = ["a", "b", "c", "d", "e", "f"]
-    for i, (ax, label) in enumerate(zip(g.axes.flat, labels)):
+
+    for i, (ax, label, group) in enumerate(
+        zip(g.axes.flat, labels, df.partition_by("Metric", "Group"))
+    ):
         ax.text(0.05, 0.95, label, fontsize=22)
         if i == 3:
             ax.set_ylabel("Positive predictive value")
@@ -227,9 +231,11 @@ def quartile_curves():
             ax.set_ylabel("Sensitivity (true positive rate)")
         if i <= 2:
             ax.set_xlabel("Type I error (false positive rate)")
+            ax.plot([0, 1], [0, 1], linestyle="--", color="black")
         else:
             ax.set_xlabel("Sensitivity (true positive rate)")
             ax.set_ylim(-0.05, 1.05)
+            ax.axhline(group["y"][0], linestyle="--", color="black")
     plt.savefig(f"data/plots/curves.{FORMAT}", format=FORMAT)
 
 
@@ -290,48 +296,8 @@ def demographic_curves():
     )
 
 
-def demographic_roc_curves():
-    df = (
-        pl.read_csv("data/results/demographic_roc.csv")
-        .filter(
-            pl.col("Label").eq(4),
-            pl.col("Group").ne("16"),
-            pl.col("Variable").ne("All"),
-        )
-        .sort("Variable", "Group")
-    )
-    sns.set_theme(font_scale=2.5)
-    g = sns.FacetGrid(df, col="Variable", col_wrap=2, height=8)
-    for col, facet_df in df.group_by(by="Variable"):
-        col = str(col)
-        ax = g.axes[g.col_names.index(col)]
-        sns.lineplot(
-            x="False positive rate",
-            y="True positive rate",
-            hue=col,
-            # style="Curve",
-            data=facet_df.rename({"Group": col}),
-            ax=ax,
-            errorbar=None,
-        )
-        ax.set(xlabel="", ylabel="")
-        ax.legend(title=col, loc="lower right")
-    g.set_titles("")
-    g.set_axis_labels(
-        "Type I error (false positive rate)", "Sensitivity (true positive rate)"
-    )
-    labels = ["A", "B", "C", "D"]
-    for ax, label in zip(g.axes.flat, labels):
-        ax.text(0.05, 0.95, label, fontsize=24)
-        ax.plot([0, 1], [0, 1], linestyle="--", color="black")
-    plt.tight_layout()
-    plt.savefig(
-        f"data/plots/demographic_roc.{FORMAT}", format=FORMAT, bbox_inches="tight"
-    )
-
-
 def cbcl_distributions(config: Config):
-    cbcl_scales = config.labels.cbcl_labels + [
+    cbcl_scales = config.features.mh_p_cbcl.columns + [
         "cbcl_scr_syn_internal_t",
         "cbcl_scr_syn_external_t",
     ]
@@ -397,65 +363,52 @@ def cbcl_distributions(config: Config):
     )
 
 
-def metric_comparison():
-    df = pl.read_csv(
-        "data/cbcl/results/metrics/metrics.csv"
-    ).with_columns(  # "data/results/metrics.csv"
-        pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
-        pl.col("Group").str.replace("Year ", ""),
-        pl.col("Variable").str.replace("Measurement year", "Year"),
-    )
-    metrics_df1 = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
-        pl.lit("Autoregressive").alias("Feature set")
-    )
-    # print(metrics_table+)
-    df = pl.read_csv("data/results/metrics.csv").with_columns(  #
-        pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
-        pl.col("Group").str.replace("Year ", ""),
-        pl.col("Variable").str.replace("Measurement year", "Year"),
-    )
-    metrics_df2 = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
-        pl.lit("Questions + brain").alias("Feature set")
-    )
-    metrics_df = pl.concat([metrics_df1, metrics_df2]).select(
-        pl.col("Feature set"), pl.exclude("Feature set")
-    )
-    print(metrics_df)
+def analysis_comparison():
+    df = pl.read_csv("data/tables/analyses_metrics.csv")
+    df = df.filter(
+        pl.col("Variable").eq("Quartile subset") & pl.col("Metric").eq("AUROC")
+    ).with_columns(pl.col("Analysis").str.to_titlecase())
+    sns.set_theme(style="darkgrid", font_scale=1.25)
     g = sns.catplot(
-        data=metrics_df.to_pandas(),
-        x="Group",
+        data=df.to_pandas(),
+        x="Quartile at t+1",
         y="value",
-        hue="Feature set",
-        col="Next quartile",
-        row="Metric",
         kind="bar",
+        hue="Analysis",
+        col="Group",
+        errorbar="pi",
     )
-    g.set_titles("{row_name}: Q{col_name}")
-    plt.show()
+    g.set(ylim=(0.5, 1.0))
+    g.set_axis_labels("Quartile at t+1", "AUROC")
+    for ax in g.axes.flat:
+        ax.axhline(0.5, color="black", linestyle="--")
+    plt.savefig(
+        f"data/plots/analysis_comparision.{FORMAT}", format=FORMAT, bbox_inches="tight"
+    )
 
 
 def plot(config):
     sns.set_theme(style="darkgrid", palette="deep", font_scale=2.0)
     sns.set_context("paper", font_scale=2.0)
 
-    metric_comparison()
+    # analysis_comparison()
+    # quartile_curves()
 
     # cbcl_distributions(config=config)
-    # quartile_curves()
     # demographic_curves()
-    # feature_names = (
-    #     pl.read_csv("data/analytic/test.csv", n_rows=1)
-    #     .drop(["src_subject_id", "p_factor", "label"])
-    #     .columns
-    # )
+
     # test_dataloader = iter(dataloader)
     # X, _ = next(test_dataloader)
     # X = pd.DataFrame(X.mean(dim=1), columns=feature_names)  # .view(-1, X.shape[2])
 
-    # metadata = pl.read_csv("data/variables.csv")
-    # shap_coefs = pl.read_csv("data/results/shap_coefs.csv")
+    # X = pl.read_csv("data/analytic/test.csv", n_rows=1).drop(
+    #     ["src_subject_id", "y_{t+1}"]
+    # )
+    metadata = pl.read_csv("data/variables.csv")
+    shap_plot(analysis="questions_brain", metadata=metadata, textwrap_width=75)
+    shap_plot(analysis="symptoms", metadata=metadata, textwrap_width=75)
+    shap_plot(analysis="questions_symptoms", metadata=metadata, textwrap_width=75)
 
-    # shap_plot(shap_coefs=shap_coefs, metadata=metadata, textwrap_width=75)
     # shap_plot(
     #     shap_coefs=shap_coefs,
     #     metadata=metadata,

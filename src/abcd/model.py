@@ -11,7 +11,7 @@ from lightning.pytorch.callbacks import (
 )
 from lightning.pytorch.loggers import TensorBoardLogger
 from lightning import Trainer
-from torchmetrics.functional import auroc
+from torchmetrics.functional.classification import multiclass_auroc, binary_auroc
 from abcd.config import Config
 from abcd.utils import get_best_checkpoint
 
@@ -44,15 +44,22 @@ class RNN(nn.Module):
 
 def make_metrics(step, loss, outputs, labels) -> dict:
     metrics = {f"{step}_loss": loss}
-    labels = labels.long()
     if step == "val":
-        auroc_score = auroc(
-            outputs,
-            labels,
-            task="multiclass",
-            num_classes=outputs.shape[-1],
-        )
-        metrics.update({"auroc": auroc_score})
+        labels = labels.long()
+        if outputs.shape[-1] > 1:
+            auroc_score = multiclass_auroc(
+                preds=outputs,
+                target=labels,
+                num_classes=outputs.shape[-1],
+                average="none",
+            )
+            metrics.update(
+                {f"auc_{i}": val for i, val in enumerate(auroc_score, start=1)}
+            )
+        else:
+            outputs = outputs.squeeze(1)
+            auroc_score = binary_auroc(preds=outputs, target=labels)
+            metrics.update({"auc": auroc_score})
     return metrics
 
 
@@ -64,16 +71,17 @@ def drop_nan(outputs, labels):
 class Network(LightningModule):
     def __init__(
         self,
-        model: nn.Module,
-        criterion: nn.Module,
-        optimizer: SGD,
-        scheduler: ReduceLROnPlateau,
+        model_hyperparameters: dict,
+        optimizer_hyperparameters: dict,
     ):
         super().__init__()
-        self.model = model
-        self.criterion = criterion
-        self.optimizer = optimizer
-        self.scheduler = scheduler
+        self.save_hyperparameters(logger=False)
+        self.model = make_architecture(**model_hyperparameters)
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = SGD(self.model.parameters(), **optimizer_hyperparameters)
+        self.scheduler = ReduceLROnPlateau(
+            self.optimizer, mode="min", patience=2, factor=0.1
+        )
 
     def forward(self, inputs):
         return self.model(inputs)
@@ -82,7 +90,7 @@ class Network(LightningModule):
         inputs, labels = batch
         outputs = self(inputs)
         outputs, labels = drop_nan(outputs, labels)
-        loss = self.criterion(outputs, labels)
+        loss = self.criterion(outputs.squeeze(1), labels)
         metrics = make_metrics(step, loss, outputs, labels)
         self.log_dict(metrics, prog_bar=True)
         return loss
@@ -177,47 +185,36 @@ def make_architecture(
 
 
 def make_model(
-    method: str,
     input_dim: int,
-    hidden_dim: int,
     output_dim: int,
-    num_layers: int,
-    dropout: float,
-    lr: float,
-    weight_decay: float,
     momentum: float,
     nesterov: bool,
+    method: str = "rnn",
+    hidden_dim: int = 256,
+    num_layers: int = 2,
+    dropout: float = 0.0,
+    lr: float = 0.01,
+    weight_decay: float = 0.0,
     checkpoints: Path | None = None,
 ):
-    model = make_architecture(
-        method=method,
-        input_dim=input_dim,
-        hidden_dim=hidden_dim,
-        output_dim=output_dim,
-        num_layers=num_layers,
-        dropout=dropout,
-    )
-    criterion = nn.CrossEntropyLoss()
-    optimizer = SGD(
-        model.parameters(),
-        lr=lr,
-        weight_decay=weight_decay,
-        momentum=momentum,
-        nesterov=nesterov,
-    )
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=2)
     if checkpoints:
         best_model_path = get_best_checkpoint(ckpt_folder=checkpoints, mode="min")
-        return Network.load_from_checkpoint(
-            checkpoint_path=best_model_path,
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            criterion=criterion,
-        )
+        return Network.load_from_checkpoint(checkpoint_path=best_model_path)
+    model_hyperparameters = {
+        "method": method,
+        "input_dim": input_dim,
+        "output_dim": output_dim,
+        "hidden_dim": hidden_dim,
+        "num_layers": num_layers,
+        "dropout": dropout,
+    }
+    optimizer_hyperparameters = {
+        "lr": lr,
+        "weight_decay": weight_decay,
+        "momentum": momentum,
+        "nesterov": nesterov,
+    }
     return Network(
-        model=model,
-        criterion=criterion,
-        optimizer=optimizer,
-        scheduler=scheduler,
+        model_hyperparameters=model_hyperparameters,
+        optimizer_hyperparameters=optimizer_hyperparameters,
     )

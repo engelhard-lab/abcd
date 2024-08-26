@@ -1,5 +1,4 @@
 from functools import partial
-import pickle
 from optuna import Trial, create_study
 from optuna.samplers import TPESampler
 
@@ -9,9 +8,13 @@ from abcd.utils import cleanup_checkpoints
 
 
 def objective(
-    trial: Trial, config: Config, data_module, input_dim: int, output_dim: int
+    trial: Trial,
+    config: Config,
+    data_module,
+    input_dim: int,
+    output_dim: int,
 ):
-    params = {
+    model_params = {
         "hidden_dim": trial.suggest_categorical(
             name="hidden_dim", choices=config.model.hidden_dim
         ),
@@ -25,6 +28,9 @@ def objective(
             low=config.model.dropout["low"],
             high=config.model.dropout["high"],
         ),
+        "method": trial.suggest_categorical(name="method", choices=["rnn", "mlp"]),
+    }
+    optimizer_params = {
         "lr": trial.suggest_float(
             name="lr",
             low=config.optimizer.lr["low"],
@@ -35,14 +41,14 @@ def objective(
             low=config.optimizer.weight_decay["low"],
             high=config.optimizer.weight_decay["high"],
         ),
-        "method": trial.suggest_categorical(name="method", choices=["rnn", "mlp"]),
     }
     model = make_model(
         input_dim=input_dim,
         output_dim=output_dim,
         momentum=config.optimizer.momentum,
         nesterov=config.optimizer.nesterov,
-        **params,
+        **optimizer_params,
+        **model_params,
     )
     trainer = make_trainer(config, checkpoint=True)
     trainer.fit(model, datamodule=data_module)
@@ -69,6 +75,3 @@ def tune(config: Config, data_module, input_dim: int, output_dim: int):
         output_dim=output_dim,
     )
     study.optimize(func=objective_function, n_trials=config.n_trials)
-    with open(config.filepaths.data.results.study, "wb") as f:
-        pickle.dump(study, f)
-    return study
