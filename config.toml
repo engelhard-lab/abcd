@@ -9,7 +9,7 @@ shap = false
 plot = false
 tables = false
 verbose = false
-n_trials = 2
+n_trials = 32
 join_on = ["src_subject_id", "eventname"]
 
 [filepaths]

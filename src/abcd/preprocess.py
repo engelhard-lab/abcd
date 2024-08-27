@@ -184,7 +184,7 @@ def get_features(df: pl.DataFrame, analysis: str, config: Config):
         case "symptoms":
             df = df.select(config.features.mh_p_cbcl.columns)
         case "all" | "autoregressive":
-            df = df
+            df = df.select(cs.exclude(exclude))
         case _:
             raise ValueError(f"Invalid analysis: {analysis}")
     return df.columns

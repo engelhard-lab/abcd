@@ -16,14 +16,14 @@ from abcd.plots import plot
 from abcd.tables import make_tables
 from abcd.tune import tune
 
+# "questions_autoregressive",
 analyses = [
-    "by_year",
+    # "by_year",
     "questions",
     "questions_brain",
     "questions_symptoms",
     "symptoms",
     "autoregressive",
-    "questions_autoregressive",
     "all",
 ]
 

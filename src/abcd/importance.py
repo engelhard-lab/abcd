@@ -49,7 +49,6 @@ def make_shap(config: Config, model, data_module, analysis: str):
         .drop(["src_subject_id", "y_t", "y_{t+1}"])
         .columns
     )
-    print(feature_names)
     shap_values = make_shap_values(model, X, background, columns=feature_names)
     shap_values.write_csv(f"data/analyses/{analysis}/results/shap_values.csv")
 

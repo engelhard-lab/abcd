@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 
-def quartile_counts_table():
+def quartile_counts():
     data = (
         pl.read_csv("data/metadata.csv")
         .rename({"Measurement year": "Year"})
@@ -58,6 +58,30 @@ def quartile_counts_table():
     )
     print(df)
     df.to_csv("data/results/tables/quartile_counts.csv", index=False)
+
+
+def demographic_counts():
+    columns = ["Subject ID", "Sex", "Race", "ADI quartile"]
+    df = pl.read_csv("data/raw/metadata.csv").select(columns).unique(columns)
+    n = df["Subject ID"].n_unique()
+    df = (
+        df.melt(id_vars="Subject ID")
+        .group_by("variable")
+        .agg(pl.col("value").value_counts())
+        .explode("value")
+        .unnest("value")
+        .with_columns(
+            pl.col("count")
+            .truediv(n)
+            .mul(100)
+            .round(1)
+            .cast(pl.String)
+            .add("%")
+            .alias("percentage")
+        )
+        .sort("variable", "value")
+        .write_csv("data/tables/demographic_counts.csv")
+    )
 
 
 def make_metric_table(df: pl.DataFrame, groups: list[str]):
@@ -149,7 +173,8 @@ def aggregate_metrics():
 
 
 def make_tables():
-    aggregate_metrics()
+    demographic_counts()
+    # aggregate_metrics()
     # df = pl.read_csv("data/tables/analyses_metrics.csv")
     # metrics_df = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
     #     pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
@@ -177,7 +202,7 @@ def make_tables():
     # shap_table()
     # make_follow_up_table()
     # make_analysis_demographics()
-    # quartile_counts_table()
+    # quartile_counts()
 
 
 if __name__ == "__main__":
