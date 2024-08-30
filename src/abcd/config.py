@@ -1,3 +1,4 @@
+from tomllib import load
 from pydantic import BaseModel
 from pathlib import Path
 from copy import deepcopy
@@ -113,6 +114,8 @@ class Config(BaseModel):
     verbose: bool
     n_trials: int
     join_on: list[str]
+    analyses: list[str]
+    device: str
     filepaths: Filepaths
     preprocess: Preprocess
     features: Features
@@ -122,7 +125,7 @@ class Config(BaseModel):
     model: Model
 
 
-def update_paths(config: Config, analysis: str):
+def update_paths(config: Config, analysis: str) -> Config:
     new_path = "data/analyses" / Path(analysis)
     analytic = deepcopy(config.filepaths.data.analytic.model_dump())
     for name, path in analytic.items():
@@ -137,3 +140,12 @@ def update_paths(config: Config, analysis: str):
         results[name] = new_filepath
     config.filepaths.data.results = Results(**results)
     return config
+
+
+def get_config(analysis: str | None = None) -> Config:
+    with open("config.toml", "rb") as f:
+        config = Config(**load(f))
+    if analysis:
+        return update_paths(config, analysis=analysis)
+    else:
+        return config

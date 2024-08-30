@@ -1,19 +1,12 @@
 import polars as pl
 import polars.selectors as cs
+from sklearn import set_config
 
-from abcd.config import Features
+from abcd.config import Features, get_config
+from abcd.preprocess import get_dataset, get_datasets
 
 RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
 SEX_MAPPING = {0: "Female", 1: "Male"}
-EVENTS = [
-    "baseline_year_1_arm_1",
-    "1_year_follow_up_y_arm_1",
-    "2_year_follow_up_y_arm_1",
-    "3_year_follow_up_y_arm_1",
-    "4_year_follow_up_y_arm_1",
-]
-EVENT_INDEX = list(range(len(EVENTS)))
-EVENT_MAPPING = dict(zip(EVENTS, EVENT_INDEX))
 
 
 def rename_questions() -> pl.Expr:
@@ -27,7 +20,11 @@ def rename_questions() -> pl.Expr:
         .when(pl.col("variable").str.contains("demo_comb_income_v2"))
         .then(pl.lit("Household income"))
         .when(pl.col("variable").eq(pl.lit("eventname")))
-        .then(pl.lit("Measurement"))
+        .then(pl.lit("Follow-up event"))
+        .when(pl.col("variable").eq(pl.lit("interview_date")))
+        .then(pl.lit("Event year"))
+        .when(pl.col("variable").eq(pl.lit("interview_age")))
+        .then(pl.lit("Age"))
         .otherwise(pl.col("question"))
         .alias("question")
     )
@@ -36,7 +33,7 @@ def rename_questions() -> pl.Expr:
 def rename_datasets() -> pl.Expr:
     return (
         pl.when(pl.col("variable").str.contains("eventname|site_id"))
-        .then(pl.lit("Site and measurement"))
+        .then(pl.lit("Follow-up event"))
         .when(pl.col("variable").str.contains("demo_sex_v2_|interview_age"))
         .then(pl.lit("Age and sex"))
         .when(
@@ -44,7 +41,7 @@ def rename_datasets() -> pl.Expr:
                 "adi_percentile|demo_comb_income_v2|parent_highest_education"
             )
         )
-        .then(pl.lit("Socio-economic status & area deprivation"))
+        .then(pl.lit("Socio-economic status"))
         .otherwise(pl.col("dataset"))
         .alias("dataset")
     )
@@ -83,7 +80,7 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
     variables = make_variable_df(dfs=dfs, features=features)
     questions = (
         pl.read_csv(
-            "data/abcd_data_dictionary.csv",
+            "data/raw/abcd_data_dictionary.csv",
             columns=["table_name", "var_name", "var_label", "notes"],
         )
         .rename(
@@ -98,7 +95,9 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
     )
     df = (
         (
-            variables.join(questions, on=["table", "variable"], how="left")
+            variables.join(
+                questions, on=["table", "variable"], how="left", coalesce=True
+            )
             .with_columns(
                 format_questions(),
                 pl.col("dataset").str.replace_all("_", " "),
@@ -128,12 +127,13 @@ def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
     )
     rename_mapping = {
         "src_subject_id": "Subject ID",
-        "eventname": "Measurement",
+        "eventname": "Follow-up event",
         "y_t": "Quartile at t",
         "y_{t+1}": "Quartile at t+1",
         "demo_sex_v2_1": "Sex",
         "race_ethnicity": "Race",
         "interview_age": "Age",
+        "interview_date": "Event year",
         "adi_percentile": "ADI quartile",
         # "parent_highest_education": "Parent highest education",
         # "demo_comb_income_v2": "Combined income",
@@ -146,6 +146,18 @@ def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
             pl.col("Race").replace(RACE_MAPPING),
             pl.col("Age").truediv(12).round(0).cast(pl.Int32),
             pl.col("ADI quartile").qcut(quantiles=4, labels=["1", "2", "3", "4"]),
+            pl.col("Follow-up event").cast(pl.Enum(["Baseline", "1", "2", "3"])),
+            pl.col("Event year").str.to_date(format="%m/%d/%Y").dt.year(),
         )
         .with_columns(cs.numeric().cast(pl.Int32))
     )
+
+
+if __name__ == "__main__":
+    set_config(transform_output="polars")
+    config = get_config(analysis="metadata")
+    datasets = get_datasets(config=config)
+    make_variable_metadata(dfs=datasets, features=config.features)
+    splits = get_dataset(analysis="metadata", config=config)
+    metadata = make_subject_metadata(splits=splits)
+    metadata.write_csv(config.filepaths.data.raw.metadata)

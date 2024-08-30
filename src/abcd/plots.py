@@ -20,12 +20,8 @@ def shap_plot(analysis, metadata, textwrap_width):
     metadata = metadata.rename({"dataset": "Dataset"}).with_columns(
         (pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset")
     )
-    # df = pl.read_csv("data/results/shap_coefs.csv")
     shap_coefs = pl.read_csv(f"data/analyses/{analysis}/results/shap_coefficients.csv")
     df = shap_coefs.join(other=metadata, on="variable", how="inner")
-    # .filter(
-    #     pl.col("variable").is_in(shap_coefs.columns)
-    # )
     print(df)
     top_questions = (
         df.group_by("question")
@@ -60,11 +56,7 @@ def shap_plot(analysis, metadata, textwrap_width):
     ]
     g.set_yticklabels(labels)
     g.yaxis.grid(True)
-    # ax2 = g.twinx() # TODO add response
-    # ax2.set_yticks(g.get_yticks())
-    # right_labels = [label for label in g.get_yticklabels()]
-    # ax2.set_yticklabels(right_labels)
-    # ax2.set_ylabel("Response")
+
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
     plt.savefig(f"data/plots/shap_coefs_{analysis}.{FORMAT}", format=FORMAT)
@@ -114,13 +106,12 @@ def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
     plt.tight_layout()
     plt.savefig(f"data/plots/shap_grouped.{FORMAT}", format=FORMAT)
 
-
-def sex_shap_plot(df: pl.DataFrame, column_mapping, subset=None):
-    plt.figure(figsize=(10, 8))
-    df = pl.read_csv("data/results/sex_shap_coefs.csv")
-    df = df.group_by(
-        "Sex",
-    ).map_groups(lambda df: format_shap_df(df, column_mapping))
+    # def sex_shap_plot(df: pl.DataFrame, column_mapping, subset=None):
+    #     plt.figure(figsize=(10, 8))
+    #     df = pl.read_csv("data/results/sex_shap_coefs.csv")
+    #     df = df.group_by(
+    #         "Sex",
+    #     ).map_groups(lambda df: format_shap_df(df, column_mapping))
     # order = (
     #     df.group_by("variable", "Sex")
     #     .agg(pl.col("value").sum().abs())
@@ -132,19 +123,19 @@ def sex_shap_plot(df: pl.DataFrame, column_mapping, subset=None):
     # .to_list()
     # )
     # print(order)
-    g = sns.pointplot(
-        data=df.to_pandas(),
-        x="value",
-        y="variable",
-        hue="Sex",
-        linestyles="none",
-        # order=order,
-    )
-    g.set(ylabel="Predictor group", xlabel="Absolute summed SHAP values")
-    g.yaxis.grid(True)
-    plt.axvline(x=0, color="black", linestyle="--")
-    plt.tight_layout()
-    plt.savefig(f"data/plots/sex_shap.{FORMAT}", format=FORMAT)
+    # g = sns.pointplot(
+    #     data=df.to_pandas(),
+    #     x="value",
+    #     y="variable",
+    #     hue="Sex",
+    #     linestyles="none",
+    #     # order=order,
+    # )
+    # g.set(ylabel="Predictor group", xlabel="Absolute summed SHAP values")
+    # g.yaxis.grid(True)
+    # plt.axvline(x=0, color="black", linestyle="--")
+    # plt.tight_layout()
+    # plt.savefig(f"data/plots/sex_shap.{FORMAT}", format=FORMAT)
 
 
 def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
@@ -201,16 +192,19 @@ def quartile_curves():
             & pl.col("Variable").eq("Quartile subset")
             & pl.col("Analysis").is_in(["Symptoms", "Questions"])
             & pl.col("Curve").eq("Model")
+            & pl.col("y").ne(0)
         )
-        .with_columns(pl.col("Metric").cast(pl.Enum(["ROC", "PR"])))
-        .sort("Metric")
+        .with_columns(
+            pl.col("Metric").cast(pl.Enum(["ROC", "PR"])),
+            pl.col("Group").cast(pl.Enum(["{1,2,3}", "{4}", "{1,2,3,4}"])),
+        )
+        .sort("Metric", "Group", "Analysis", "x")
     )
     g = sns.relplot(
         data=df.to_pandas(),
         x="x",
         y="y",
         hue="Analysis",
-        # style="Curve",
         row="Metric",
         col="Group",
         kind="line",
@@ -219,23 +213,28 @@ def quartile_curves():
         facet_kws={"sharex": False, "sharey": False},
     )
     g.set_titles("")
+    font_size = 24
     labels = ["a", "b", "c", "d", "e", "f"]
-
-    for i, (ax, label, group) in enumerate(
-        zip(g.axes.flat, labels, df.partition_by("Metric", "Group"))
-    ):
-        ax.text(0.05, 0.95, label, fontsize=22)
+    grouped_df = df.partition_by(["Metric", "Group"], maintain_order=True)
+    for i, (ax, label, group) in enumerate(zip(g.axes.flat, labels, grouped_df)):
         if i == 3:
-            ax.set_ylabel("Positive predictive value")
+            ax.set_ylabel("Precision (positive predictive value)")
         if i == 0:
-            ax.set_ylabel("Sensitivity (true positive rate)")
+            ax.set_ylabel("True positive rate (sensitivity)")
         if i <= 2:
-            ax.set_xlabel("Type I error (false positive rate)")
+            ax.text(0.05, 0.95, label, fontsize=font_size)
+            ax.set_xlabel("False positive rate (Type I error)")
             ax.plot([0, 1], [0, 1], linestyle="--", color="black")
         else:
-            ax.set_xlabel("Sensitivity (true positive rate)")
-            ax.set_ylim(-0.05, 1.05)
-            ax.axhline(group["y"][0], linestyle="--", color="black")
+            ax.text(0.95, 0.95, label, fontsize=font_size)
+            ax.set_xlabel("Recall (sensitivity)")
+            print(group["y"].min())
+            ax.axhline(
+                group.filter(pl.col("y").ne(0))["y"].min(),
+                linestyle="--",
+                color="black",
+            )
+        ax.set_ylim(-0.05, 1.05)
     plt.savefig(f"data/plots/curves.{FORMAT}", format=FORMAT)
 
 
@@ -364,17 +363,16 @@ def cbcl_distributions(config: Config):
 
 
 def analysis_comparison():
-    df = pl.read_csv("data/tables/analyses_metrics.csv")
+    df = pl.read_parquet("data/results/metrics/metrics.parquet")
     df = df.filter(
         pl.col("Variable").eq("Quartile subset") & pl.col("Metric").eq("AUROC")
-    ).with_columns(pl.col("Analysis").str.to_titlecase())
-    sns.set_theme(style="darkgrid", font_scale=1.25)
+    )
     g = sns.catplot(
         data=df.to_pandas(),
         x="Quartile at t+1",
         y="value",
         kind="bar",
-        hue="Analysis",
+        hue="Predictor set",
         col="Group",
         errorbar="pi",
     )
@@ -383,7 +381,36 @@ def analysis_comparison():
     for ax in g.axes.flat:
         ax.axhline(0.5, color="black", linestyle="--")
     plt.savefig(
-        f"data/plots/analysis_comparision.{FORMAT}", format=FORMAT, bbox_inches="tight"
+        f"data/supplement/plots/supplemental_figure_2.{FORMAT}",
+        format=FORMAT,
+        bbox_inches="tight",
+    )
+
+
+def by_year_comparison():
+    df = pl.read_parquet("data/results/metrics/metrics.parquet")
+    df = df.filter(
+        pl.col("Predictor set").is_in(["{Questions}", "{Symptoms}"])
+        & pl.col("Group").eq("{1,2,3}")
+        & pl.col("Metric").eq("AUROC")
+    )
+    g = sns.catplot(
+        data=df.to_pandas(),
+        x="Quartile at t+1",
+        y="value",
+        kind="bar",
+        hue="p-factor model",
+        col="Predictor set",
+        errorbar="pi",
+    )
+    g.set(ylim=(0.45, 1.0))
+    g.set_axis_labels("Quartile at t+1", "AUROC")
+    for ax in g.axes.flat:
+        ax.axhline(0.5, color="black", linestyle="--")
+    plt.savefig(
+        f"data/supplement/plots/supplemental_figure_3.{FORMAT}",
+        format=FORMAT,
+        bbox_inches="tight",
     )
 
 
@@ -391,8 +418,9 @@ def plot(config):
     sns.set_theme(style="darkgrid", palette="deep", font_scale=2.0)
     sns.set_context("paper", font_scale=2.0)
 
-    # analysis_comparison()
+    analysis_comparison()
     # quartile_curves()
+    by_year_comparison()
 
     # cbcl_distributions(config=config)
     # demographic_curves()
@@ -404,10 +432,10 @@ def plot(config):
     # X = pl.read_csv("data/analytic/test.csv", n_rows=1).drop(
     #     ["src_subject_id", "y_{t+1}"]
     # )
-    metadata = pl.read_csv("data/variables.csv")
-    shap_plot(analysis="questions_brain", metadata=metadata, textwrap_width=75)
-    shap_plot(analysis="symptoms", metadata=metadata, textwrap_width=75)
-    shap_plot(analysis="questions_symptoms", metadata=metadata, textwrap_width=75)
+    # metadata = pl.read_csv("data/variables.csv")
+    # shap_plot(analysis="questions_mri", metadata=metadata, textwrap_width=75)
+    # shap_plot(analysis="symptoms", metadata=metadata, textwrap_width=75)
+    # shap_plot(analysis="questions_symptoms", metadata=metadata, textwrap_width=75)
 
     # shap_plot(
     #     shap_coefs=shap_coefs,

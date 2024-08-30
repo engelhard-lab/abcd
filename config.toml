@@ -1,7 +1,7 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = true
-tune = true
+regenerate = false
+tune = false
 log = false
 predict = true
 evaluate = true
@@ -11,6 +11,17 @@ tables = false
 verbose = false
 n_trials = 32
 join_on = ["src_subject_id", "eventname"]
+analyses = [
+    "by_year_questions",
+    "by_year_symptoms",
+    "questions",
+    "questions_mri",
+    "questions_symptoms",
+    "symptoms",
+    "questions_mri_symptoms",
+    "autoregressive",
+]
+device = "mps"
 
 [filepaths]
 tables = "data/tables/"
@@ -102,7 +113,7 @@ columns = [
 [features.abcd_y_lt]
 name = "Demographics"
 respondent = "Parent"
-columns = ["interview_age"] # , "site_id_l"
+columns = ["interview_age", "interview_date"] # , "site_id_l"
 [features.abcd_aces]
 name = "Adverse childhood experiences (ACEs)"
 respondent = "Parent"                         # TODO check if this is from parent, youth, or both

@@ -2,17 +2,15 @@ import polars as pl
 import pandas as pd
 import numpy as np
 
+from abcd.config import Config, get_config
+
 
 def quartile_counts():
-    data = (
-        pl.read_csv("data/metadata.csv")
-        .rename({"Measurement year": "Year"})
-        .with_columns(pl.col("Year").str.replace("Year ", ""))
-        .to_pandas()
-    )
+    data = pl.read_csv("data/raw/metadata.csv")
+    data = data.to_pandas()
     data["Next quartile"] = data["Next quartile"] + 1
     quartile = data["Next quartile"]
-    variables = ["Sex", "Age", "Race", "Year", "ADI quartile"]
+    variables = ["Sex", "Age", "Race", "Follow-up event", "Event year", "ADI quartile"]
     dfs = []
     for i, name in enumerate(variables):
         variable = data[name]
@@ -57,7 +55,7 @@ def quartile_counts():
         }
     )
     print(df)
-    df.to_csv("data/results/tables/quartile_counts.csv", index=False)
+    df.to_csv("data/tables/table_1.csv", index=False)
 
 
 def demographic_counts():
@@ -80,7 +78,7 @@ def demographic_counts():
             .alias("percentage")
         )
         .sort("variable", "value")
-        .write_csv("data/tables/demographic_counts.csv")
+        .write_csv("data/tables/supplemental_table_1.csv")
     )
 
 
@@ -101,11 +99,33 @@ def make_metric_table(df: pl.DataFrame, groups: list[str]):
             )
             .otherwise(pl.col("value"))
         )
-        .sort(groups + ["Quartile at t+1"])
+        .sort("Quartile at t+1")
         .pivot(values="value", columns="Quartile at t+1", index=groups)
         .rename(
             {"1": "Quartile 1", "2": "Quartile 2", "3": "Quartile 3", "4": "Quartile 4"}
         )
+        .with_columns(
+            pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
+            pl.when(pl.col("Predictor set").str.contains("by_year"))
+            .then(pl.lit("Within-event"))
+            .otherwise(pl.lit("Across-event"))
+            .alias("p-factor model"),
+        )
+        .with_columns(
+            pl.col("Predictor set").map_dict(
+                {
+                    "by_year_questions": "{Questions}",
+                    "by_year_symptoms": "{Symptoms}",
+                    "questions": "{Questions}",
+                    "symptoms": "{Symptoms}",
+                    "questions_symptoms": "{Questions, Symptoms}",
+                    "questions_mri": "{Questions, MRI}",
+                    "questions_mri_symptoms": "{Questions, MRI, Symptoms}",
+                    "autoregressive": "{Previous p-factors}",
+                }
+            )
+        )
+        .sort(groups)
     )
     print(df)
     return df
@@ -134,76 +154,48 @@ def shap_table():
         )
         .sort(["dataset", "table", "respondent", "variable"])
     )
-    df.write_csv("data/results/tables/shap_coefs.csv")
+    df.write_csv("data/tables/shap_coefs.csv")
 
 
-def format_analysis(df, name):
-    return df.with_columns(pl.lit(name).alias("Analysis")).with_columns(
-        pl.col("Analysis").str.replace("_", " + ").str.to_titlecase()
+def format_analysis(df: pl.LazyFrame, name: str):
+    if name == "by_year":
+        return df.with_columns(pl.lit("By year").alias("Predictor set"))
+    else:
+        return df.with_columns(pl.lit(name).alias("Predictor set"))
+
+
+def aggregate_metrics(analyses: list[str]):
+    for name in ("curves", "metrics", "sensitivity_specificity"):
+        metrics = []
+        for analysis in analyses:
+            path = f"data/analyses/{analysis}/results/metrics/{name}.csv"
+            metric = pl.scan_csv(path).pipe(format_analysis, name=analysis)
+            metrics.append(metric)
+        pl.concat(metrics).sink_parquet(f"data/results/metrics/{name}.parquet")
+
+
+def make_tables(config: Config):
+    # demographic_counts()
+    aggregate_metrics(analyses=config.analyses)
+    df = pl.read_parquet("data/results/metrics/metrics.parquet")
+    metric_table = make_metric_table(
+        df=df, groups=["Predictor set", "Metric", "Variable", "Group"]
     )
-
-
-def aggregate_metrics():
-    names = [
-        # "by_year",
-        # "binary",
-        "questions",
-        "questions_brain",
-        "autoregressive",
-        "questions_autoregressive",
-        "questions_symptoms",
-        "symptoms",
-        "all",
-    ]
-    metrics = []
-    curves = []
-    for name in names:
-        metric = pl.read_csv(f"data/analyses/{name}/results/metrics/metrics.csv").pipe(
-            format_analysis, name=name
-        )
-        metrics.append(metric)
-        curve = pl.read_csv(f"data/analyses/{name}/results/metrics/curves.csv").pipe(
-            format_analysis, name=name
-        )
-        curves.append(curve)
-    metrics = pl.concat(metrics)
-    curves = pl.concat(curves)
-    metrics.write_csv("data/tables/analyses_metrics.csv")
-    curves.write_csv("data/tables/analyses_curves.csv")
-
-
-def make_tables():
-    demographic_counts()
-    # aggregate_metrics()
-    # df = pl.read_csv("data/tables/analyses_metrics.csv")
-    # metrics_df = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
-    #     pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
-    #     # pl.col("Group").str.replace("Year ", ""),
-    #     # pl.col("Variable").str.replace("Measurement year", "Year"),
-    # )
-    # metrics_table = make_metric_table(
-    #     df=metrics_df, groups=["analysis", "Metric", "Group"]
-    # )
-    # metrics_table.write_csv("data/results/tables/quartile_subset_summary.csv")
-
-    # demographic_df = df.filter(pl.col("Variable").ne("Quartile subset"))
-    # demographic_metrics = make_metric_table(
-    #     df=demographic_df, groups=["Metric", "Variable", "Group"]
-    # ).sort(
-    #     [
-    #         "Metric",
-    #         "Variable",
-    #         pl.col("Group").cast(pl.Int32, strict=False),
-    #     ]
-    # )
-    # demographic_metrics.write_csv("data/results/tables/demographic_metrics.csv")
-    # print(demographic_metrics)
-    # print(df)
+    quartile_metrics = metric_table.filter(
+        pl.col("Variable").eq("Quartile subset")
+        & pl.col("Predictor set").str.contains("Symptoms|Questions")
+    ).drop("Variable")
+    quartile_metrics.write_csv("data/tables/table_2.csv")
+    print(quartile_metrics)
+    demographic_metrics = metric_table.filter(
+        pl.col("Variable").ne("Quartile subset") & pl.col("Predictor set").ne("By year")
+    )
+    demographic_metrics.write_csv("data/supplement/tables/supplemental_table_2.csv")
+    print(demographic_metrics)
     # shap_table()
-    # make_follow_up_table()
-    # make_analysis_demographics()
     # quartile_counts()
 
 
 if __name__ == "__main__":
-    make_tables()
+    config = get_config()
+    make_tables(config)
