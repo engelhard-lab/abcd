@@ -174,24 +174,33 @@ def aggregate_metrics(analyses: list[str]):
         pl.concat(metrics).sink_parquet(f"data/results/metrics/{name}.parquet")
 
 
+def quartile_metric_table(df: pl.DataFrame):
+    return df.filter(
+        pl.col("Variable").eq("Quartile subset")
+        & pl.col("Predictor set").is_in(["{Symptoms}", "{Questions}"])
+        & pl.col("p-factor model").eq("Within-event")
+    ).drop("p-factor model", "Variable")
+
+
+def demographic_metric_table(df: pl.DataFrame):
+    return df.filter(
+        pl.col("Variable").ne("Quartile subset")
+        & pl.col("p-factor model").eq("Within-event")
+    ).drop("p-factor model")
+
+
 def make_tables(config: Config):
     # demographic_counts()
     aggregate_metrics(analyses=config.analyses)
     df = pl.read_parquet("data/results/metrics/metrics.parquet")
-    metric_table = make_metric_table(
-        df=df, groups=["Predictor set", "Metric", "Variable", "Group"]
-    )
-    quartile_metrics = metric_table.filter(
-        pl.col("Variable").eq("Quartile subset")
-        & pl.col("Predictor set").str.contains("Symptoms|Questions")
-    ).drop("Variable")
-    quartile_metrics.write_csv("data/tables/table_2.csv")
+    groups = ["Predictor set", "Metric", "Variable", "Group"]
+    metric_table = make_metric_table(df=df, groups=groups)
+    quartile_metrics = quartile_metric_table(df=metric_table)
     print(quartile_metrics)
-    demographic_metrics = metric_table.filter(
-        pl.col("Variable").ne("Quartile subset") & pl.col("Predictor set").ne("By year")
-    )
-    demographic_metrics.write_csv("data/supplement/tables/supplemental_table_2.csv")
+    quartile_metrics.write_csv("data/tables/table_2.csv")
+    demographic_metrics = demographic_metric_table(df=metric_table)
     print(demographic_metrics)
+    demographic_metrics.write_csv("data/supplement/tables/supplemental_table_2.csv")
     # shap_table()
     # quartile_counts()
 

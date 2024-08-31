@@ -365,7 +365,9 @@ def cbcl_distributions(config: Config):
 def analysis_comparison():
     df = pl.read_parquet("data/results/metrics/metrics.parquet")
     df = df.filter(
-        pl.col("Variable").eq("Quartile subset") & pl.col("Metric").eq("AUROC")
+        pl.col("Variable").eq("Quartile subset")
+        & pl.col("Metric").eq("AUROC")
+        & pl.col("p-factor model").eq("Across-event")
     )
     g = sns.catplot(
         data=df.to_pandas(),

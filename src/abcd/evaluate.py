@@ -70,16 +70,14 @@ def make_curve(df: pl.DataFrame, curve: Callable, name: str):
 
 
 def bootstrap_metric(metric, outputs, labels, n_bootstraps=1000):
-    metric.to(torch.device(outputs.device))
     bootstrap = BootStrapper(
         metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
     )
     bootstrap.to(outputs.device)
     bootstrap.update(outputs, labels)
     bootstraps = bootstrap.compute()["raw"].cpu().numpy()
-    return pl.DataFrame(bootstraps).rename(
-        lambda x: str(int(x.replace("column_", "")) + 1)
-    )
+    columns = [str(i) for i in range(1, outputs.shape[-1] + 1)]
+    return pl.DataFrame(bootstraps, schema=columns)
 
 
 def make_metrics(df: pl.DataFrame):
