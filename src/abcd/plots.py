@@ -389,7 +389,7 @@ def analysis_comparison():
     )
 
 
-def by_year_comparison():
+def p_factor_model_comparison():
     df = pl.read_parquet("data/results/metrics/metrics.parquet")
     df = df.filter(
         pl.col("Predictor set").is_in(["{Questions}", "{Symptoms}"])
@@ -422,7 +422,7 @@ def plot(config):
 
     analysis_comparison()
     # quartile_curves()
-    by_year_comparison()
+    p_factor_model_comparison()
 
     # cbcl_distributions(config=config)
     # demographic_curves()

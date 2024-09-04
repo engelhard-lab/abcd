@@ -67,9 +67,8 @@ def make_adi(df: pl.DataFrame, join_on: list[str]):
     return (
         df.with_columns(
             pl.mean_horizontal(adi_columns).forward_fill().alias("adi_percentile")
-        )
-        .select(*join_on, "adi_percentile")
-        .drop(adi_columns)
+        ).select(*join_on, "adi_percentile")
+        # .drop(adi_columns)
     )
 
 
@@ -95,7 +94,6 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         {
             "abcd_p_demo": make_demographics,
             "led_l_adi": partial(make_adi, join_on=config.join_on),
-            # "abcd_y_lt": lambda df: df.to_dummies(["site_id_l"], drop_first=True),
         }
     )
     dfs = []
@@ -113,7 +111,7 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         transform = transforms[filename]
         df = (
             df.select(columns)
-            .select(~cs.contains(columns_to_drop))
+            .select(~cs.contains(*columns_to_drop))
             .filter(pl.col("eventname").is_in(EVENTS))
             .with_columns(pl.all().replace({777: None, 999: None}))
             .with_columns(
@@ -176,13 +174,13 @@ def get_features(df: pl.DataFrame, analysis: str, config: Config):
             df = df.select(cs.exclude(exclude[:-2]))
         case "questions_mri":
             df = df.select(cs.exclude(exclude + config.features.mh_p_cbcl.columns))
-        case "questions" | "by_year_questions":
+        case "questions":
             df = df.select(
                 cs.exclude(exclude + config.features.mh_p_cbcl.columns + brain_features)
             )
         case "questions_symptoms":
             df = df.select(cs.exclude(exclude + brain_features))
-        case "symptoms" | "autoregressive" | "by_year_symptoms":
+        case "symptoms" | "autoregressive":
             df = df.select(config.features.mh_p_cbcl.columns)
         case "questions_mri_symptoms":
             df = df.select(cs.exclude(exclude))
@@ -221,26 +219,6 @@ def format_labels(
         if analysis == "autoregressive":
             split = split.select(group, "p-factor", "y_{t+1}")
         splits[name] = split
-    return splits
-
-
-def transform_by_year(
-    splits: dict[str, pl.DataFrame], transformer: Callable, event: str
-):
-    transformers = {}
-    train_groups = []
-    for name, train_group in splits["train"].group_by(event, maintain_order=True):
-        transformers[name] = transformer()
-        train_groups.append(transformers[name].fit_transform(train_group))
-    val_groups = []
-    for name, val_group in splits["val"].group_by(event, maintain_order=True):
-        val_groups.append(transformers[name].transform(val_group))
-    test_groups = []
-    for name, test_group in splits["test"].group_by(event, maintain_order=True):
-        test_groups.append(transformers[name].transform(test_group))
-    splits["train"] = pl.concat(train_groups)
-    splits["val"] = pl.concat(val_groups)
-    splits["test"] = pl.concat(test_groups)
     return splits
 
 
@@ -284,6 +262,26 @@ def impute_by_time_point(df: pl.DataFrame):
     return df.with_columns(cs.numeric().fill_null(strategy="mean").over("eventname"))
 
 
+def transform_within_event(
+    splits: dict[str, pl.DataFrame], transformer: Callable, event: str
+):
+    transformers = {}
+    train_groups = []
+    for name, train_group in splits["train"].group_by(event, maintain_order=True):
+        transformers[name] = transformer()
+        train_groups.append(transformers[name].fit_transform(train_group))
+    val_groups = []
+    for name, val_group in splits["val"].group_by(event, maintain_order=True):
+        val_groups.append(transformers[name].transform(val_group))
+    test_groups = []
+    for name, test_group in splits["test"].group_by(event, maintain_order=True):
+        test_groups.append(transformers[name].transform(test_group))
+    splits["train"] = pl.concat(train_groups)
+    splits["val"] = pl.concat(val_groups)
+    splits["test"] = pl.concat(test_groups)
+    return splits
+
+
 def transform_data(
     splits: dict,
     group: str,
@@ -291,6 +289,7 @@ def transform_data(
     feature_columns: list[str],
     label_columns: list[str],
     analysis: str,
+    factor_model: str,
     n_quantiles: int,
 ) -> dict[str, pl.DataFrame]:
     partial_transformer = partial(
@@ -303,8 +302,8 @@ def transform_data(
     )
     for name, split in splits.items():
         splits[name] = split.pipe(impute_by_time_point)
-    if "by_year" in analysis:
-        splits = transform_by_year(
+    if factor_model == "within_event":
+        splits = transform_within_event(
             splits=splits,
             transformer=partial_transformer,
             event=event,
@@ -318,7 +317,7 @@ def transform_data(
     return splits
 
 
-def make_dataset(config: Config, analysis: str):
+def make_dataset(config: Config, analysis: str, factor_model: str):
     df = generate_data(config=config)
     df.write_csv(config.filepaths.data.raw.dataset)
     group, event = config.join_on
@@ -336,6 +335,7 @@ def make_dataset(config: Config, analysis: str):
         feature_columns=features,
         label_columns=config.features.mh_p_cbcl.columns,
         analysis=analysis,
+        factor_model=factor_model,
         n_quantiles=config.preprocess.n_quantiles,
     )
     splits["train"].write_csv(config.filepaths.data.analytic.train)
@@ -344,9 +344,9 @@ def make_dataset(config: Config, analysis: str):
     return splits
 
 
-def get_dataset(analysis: str, config: Config):
+def get_dataset(analysis: str, factor_model: str, config: Config):
     if config.regenerate:
-        splits = make_dataset(config, analysis)
+        splits = make_dataset(config, analysis, factor_model)
     else:
         splits = {
             "train": pl.read_csv(config.filepaths.data.analytic.train),

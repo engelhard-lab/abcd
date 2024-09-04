@@ -4,6 +4,7 @@ from lightning import seed_everything
 from sklearn import set_config
 import polars as pl
 from tqdm import tqdm
+from itertools import product
 
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
@@ -20,10 +21,16 @@ def main():
     pl.Config(tbl_cols=14)
     set_config(transform_output="polars")
     config = get_config()
-    for analysis in tqdm(config.analyses):
+    analyses = product(config.analyses, config.factor_models)
+    progress_bar = tqdm(
+        analyses, total=len(config.analyses) * len(config.factor_models)
+    )
+    for analysis, factor_model in progress_bar:
         seed_everything(config.random_seed)
-        config = get_config(analysis=analysis)
-        splits = get_dataset(analysis=analysis, config=config)
+        config = get_config(analysis=analysis, factor_model=factor_model)
+        splits = get_dataset(
+            analysis=analysis, factor_model=factor_model, config=config
+        )
         data_module = ABCDDataModule(
             **splits,
             batch_size=config.training.batch_size,
@@ -47,10 +54,10 @@ def main():
         )
         if config.evaluate:
             evaluate_model(data_module=data_module, config=config, model=model)
-        if config.shap:
-            make_shap(
-                config=config, model=model, data_module=data_module, analysis=analysis
-            )
+    if config.shap:
+        make_shap(
+            config=config, model=model, data_module=data_module, analysis=analysis
+        )
     if config.tables:
         make_tables(config=config)
     if config.plot:

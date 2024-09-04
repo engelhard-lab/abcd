@@ -115,6 +115,7 @@ class Config(BaseModel):
     n_trials: int
     join_on: list[str]
     analyses: list[str]
+    factor_models: list[str]
     device: str
     filepaths: Filepaths
     preprocess: Preprocess
@@ -125,8 +126,11 @@ class Config(BaseModel):
     model: Model
 
 
-def update_paths(config: Config, analysis: str) -> Config:
-    new_path = "data/analyses" / Path(analysis)
+def update_paths(config: Config, analysis: str, factor_model: str) -> Config:
+    if analysis == "metadata":
+        new_path = Path("data/analyses/metadata")
+    else:
+        new_path = Path(f"data/analyses/{factor_model}/{analysis}")
     analytic = deepcopy(config.filepaths.data.analytic.model_dump())
     for name, path in analytic.items():
         new_filepath = new_path / path
@@ -142,10 +146,10 @@ def update_paths(config: Config, analysis: str) -> Config:
     return config
 
 
-def get_config(analysis: str | None = None) -> Config:
+def get_config(analysis: str | None = None, factor_model: str | None = None) -> Config:
     with open("config.toml", "rb") as f:
         config = Config(**load(f))
-    if analysis:
-        return update_paths(config, analysis=analysis)
+    if analysis and factor_model:
+        return update_paths(config, analysis=analysis, factor_model=factor_model)
     else:
         return config

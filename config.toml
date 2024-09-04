@@ -1,7 +1,7 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = false
-tune = false
+regenerate = true
+tune = true
 log = false
 predict = true
 evaluate = true
@@ -11,13 +11,12 @@ tables = false
 verbose = false
 n_trials = 32
 join_on = ["src_subject_id", "eventname"]
+factor_models = ["within_event"] # , "across_event"
 analyses = [
-    "by_year_questions",
-    "by_year_symptoms",
-    "questions",
+    # "questions",
     "questions_mri",
     "questions_symptoms",
-    "symptoms",
+    # "symptoms",
     "questions_mri_symptoms",
     "autoregressive",
 ]

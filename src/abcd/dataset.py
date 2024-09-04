@@ -52,7 +52,7 @@ class ABCDDataModule(LightningDataModule):
         self.test_dataset = dataset_class(dataset=test)
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.feature_names = train.drop(["src_subject_id", "y_t", "y_{t+1}"]).columns
+        self.feature_names = train.drop(["src_subject_id", "y_{t+1}"]).columns
 
     def train_dataloader(self):
         return DataLoader(

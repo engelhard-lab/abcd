@@ -1,6 +1,7 @@
 import polars as pl
 import polars.selectors as cs
 from sklearn import set_config
+from sympy import factor
 
 from abcd.config import Features, get_config
 from abcd.preprocess import get_dataset, get_datasets
@@ -146,7 +147,9 @@ def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
             pl.col("Race").replace(RACE_MAPPING),
             pl.col("Age").truediv(12).round(0).cast(pl.Int32),
             pl.col("ADI quartile").qcut(quantiles=4, labels=["1", "2", "3", "4"]),
-            pl.col("Follow-up event").cast(pl.Enum(["Baseline", "1", "2", "3"])),
+            pl.col("Follow-up event").cast(
+                pl.Enum(["Baseline", "1-year", "2-year", "3-year"])
+            ),
             pl.col("Event year").str.to_date(format="%m/%d/%Y").dt.year(),
         )
         .with_columns(cs.numeric().cast(pl.Int32))
@@ -155,9 +158,9 @@ def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
 
 if __name__ == "__main__":
     set_config(transform_output="polars")
-    config = get_config(analysis="metadata")
+    config = get_config()
     datasets = get_datasets(config=config)
     make_variable_metadata(dfs=datasets, features=config.features)
-    splits = get_dataset(analysis="metadata", config=config)
+    splits = get_dataset(analysis="metadata", factor_model="within_year", config=config)
     metadata = make_subject_metadata(splits=splits)
     metadata.write_csv(config.filepaths.data.raw.metadata)

@@ -100,22 +100,20 @@ def make_metric_table(df: pl.DataFrame, groups: list[str]):
             .otherwise(pl.col("value"))
         )
         .sort("Quartile at t+1")
-        .pivot(values="value", columns="Quartile at t+1", index=groups)
+        .pivot(on="Quartile at t+1", values="value", index=groups)
         .rename(
             {"1": "Quartile 1", "2": "Quartile 2", "3": "Quartile 3", "4": "Quartile 4"}
         )
         .with_columns(
             pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
-            pl.when(pl.col("Predictor set").str.contains("by_year"))
+            pl.when(pl.col("Predictor set").str.contains("within_event"))
             .then(pl.lit("Within-event"))
             .otherwise(pl.lit("Across-event"))
             .alias("p-factor model"),
         )
         .with_columns(
-            pl.col("Predictor set").map_dict(
+            pl.col("Predictor set").replace(
                 {
-                    "by_year_questions": "{Questions}",
-                    "by_year_symptoms": "{Symptoms}",
                     "questions": "{Questions}",
                     "symptoms": "{Symptoms}",
                     "questions_symptoms": "{Questions, Symptoms}",
@@ -157,21 +155,17 @@ def shap_table():
     df.write_csv("data/tables/shap_coefs.csv")
 
 
-def format_analysis(df: pl.LazyFrame, name: str):
-    if name == "by_year":
-        return df.with_columns(pl.lit("By year").alias("Predictor set"))
-    else:
-        return df.with_columns(pl.lit(name).alias("Predictor set"))
-
-
-def aggregate_metrics(analyses: list[str]):
-    for name in ("curves", "metrics", "sensitivity_specificity"):
+def aggregate_metrics(analyses: list[str], factor_models: list[str]):
+    for metric_type in ("curves", "metrics", "sensitivity_specificity"):
         metrics = []
-        for analysis in analyses:
-            path = f"data/analyses/{analysis}/results/metrics/{name}.csv"
-            metric = pl.scan_csv(path).pipe(format_analysis, name=analysis)
-            metrics.append(metric)
-        pl.concat(metrics).sink_parquet(f"data/results/metrics/{name}.parquet")
+        for factor_model in factor_models:
+            for analysis in analyses:
+                path = f"data/analyses/{factor_model}/{analysis}/results/metrics/{metric_type}.csv"
+                metric = pl.scan_csv(path).with_columns(
+                    pl.lit(analysis).alias("Factor model")
+                )
+                metrics.append(metric)
+        pl.concat(metrics).sink_parquet(f"data/results/metrics/{metric_type}.parquet")
 
 
 def quartile_metric_table(df: pl.DataFrame):
@@ -191,7 +185,7 @@ def demographic_metric_table(df: pl.DataFrame):
 
 def make_tables(config: Config):
     # demographic_counts()
-    aggregate_metrics(analyses=config.analyses)
+    aggregate_metrics(analyses=config.analyses, factor_models=config.factor_models)
     df = pl.read_parquet("data/results/metrics/metrics.parquet")
     groups = ["Predictor set", "Metric", "Variable", "Group"]
     metric_table = make_metric_table(df=df, groups=groups)
