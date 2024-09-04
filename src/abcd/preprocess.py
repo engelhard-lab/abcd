@@ -1,6 +1,8 @@
 from collections import defaultdict
 from typing import Callable
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import FunctionTransformer, make_pipeline
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
@@ -142,24 +144,25 @@ def get_brain_features(config: Config):
 
 def get_features(df: pl.DataFrame, analysis: str, config: Config):
     brain_features = get_brain_features(config)
-    exclude = [config.join_on[0], "race_ethnicity", "interview_date"]
+    columns = ["src_subject_id", "race_ethnicity", "interview_date"]
     match analysis:
         case "metadata":
-            df = df.select(cs.exclude(exclude[:-2]))
+            columns = df.columns
+        case "questions_mri_symptoms":
+            columns = cs.exclude(columns)
         case "questions_mri":
-            df = df.select(cs.exclude(exclude + config.features.mh_p_cbcl.columns))
+            columns = cs.exclude(columns + config.features.mh_p_cbcl.columns)
         case "questions":
-            df = df.select(
-                cs.exclude(exclude + config.features.mh_p_cbcl.columns + brain_features)
+            columns = cs.exclude(
+                columns + config.features.mh_p_cbcl.columns + brain_features
             )
         case "questions_symptoms":
-            df = df.select(cs.exclude(exclude + brain_features))
+            columns = cs.exclude(columns + brain_features)
         case "symptoms" | "autoregressive":
-            df = df.select(config.features.mh_p_cbcl.columns)
-        case "questions_mri_symptoms":
-            df = df.select(cs.exclude(exclude))
+            columns = config.features.mh_p_cbcl.columns
         case _:
             raise ValueError(f"Invalid analysis: {analysis}")
+    df = df.select(columns)
     return df.columns
 
 
@@ -175,6 +178,97 @@ def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: in
         val_test, train_size=0.5, random_state=random_state, shuffle=False
     )
     return {"train": pl.concat(train), "val": pl.concat(val), "test": pl.concat(test)}
+
+
+class GroupByTransformer(BaseEstimator, TransformerMixin):
+    def __init__(self, groups: str, transformer):
+        self.groups = groups
+        self.transformer = transformer
+        self.transformers_ = {}
+
+    def fit(self, X: pl.DataFrame, y=None):
+        for name, group in X.group_by(self.groups, maintain_order=True):
+            self.transformers_[name] = self.transformer()
+            self.transformers_[name].fit(group)
+        return self
+
+    def transform(self, X: pl.DataFrame):
+        transformed_groups = []
+        for name, group in X.group_by(self.groups, maintain_order=True):
+            transformed_group = self.transformers_[name].transform(group)
+            transformed_groups.append(transformed_group)
+        return X.with_columns(pl.concat(transformed_groups))
+
+    def fit_transform(self, X: pl.DataFrame, y=None):
+        return self.fit(X, y).transform(X)
+
+
+def factor_quartiles(n_quantiles: int):
+    return [
+        FunctionTransformer(lambda x: x.drop("eventname")),
+        FactorAnalysis(n_components=1),
+        KBinsDiscretizer(n_bins=n_quantiles, encode="ordinal", strategy="quantile"),
+        FunctionTransformer(lambda x: x.rename({"factoranalysis0": "p-factor"})),
+    ]
+
+
+def make_label_pipeline(factor_model, event, n_quantiles):
+    imputer = partial(SimpleImputer, strategy="mean")
+    factor_steps = factor_quartiles(n_quantiles)
+    match factor_model:
+        case "within_event":
+            steps = [StandardScaler(), imputer()] + factor_steps
+            pipeline = GroupByTransformer(
+                groups=event, transformer=partial(make_pipeline, *steps)
+            )
+        case "across_event":
+            steps = [
+                StandardScaler(),
+                GroupByTransformer(groups=event, transformer=imputer),
+            ] + factor_steps
+            pipeline = make_pipeline(*steps)
+    return pipeline
+
+
+def make_feature_pipeline(analysis: str, event: str):
+    if analysis == "metadata":
+        steps = [FunctionTransformer(lambda x: x)]
+    else:
+        steps = [
+            StandardScaler(),
+            GroupByTransformer(
+                groups=event, transformer=partial(SimpleImputer, strategy="mean")
+            ),
+        ]
+    if analysis == "autoregressive":
+        steps += [
+            FactorAnalysis(n_components=1),
+            FunctionTransformer(lambda x: x.rename({"factoranalysis0": "p-factor"})),
+        ]
+    return make_pipeline(*steps)
+
+
+def make_transformer(
+    analysis: str,
+    factor_model: str,
+    group: str,
+    event: str,
+    feature_columns: list[str],
+    label_columns: list[str],
+    n_quantiles: int,
+):
+    feature_pipeline = make_feature_pipeline(analysis, event)
+    label_pipeline = make_label_pipeline(factor_model, event, n_quantiles=n_quantiles)
+    transformers = [
+        ("subject_id", FunctionTransformer(lambda x: x), [group]),
+        ("features", feature_pipeline, feature_columns),
+        ("labels", label_pipeline, label_columns),
+    ]
+    return ColumnTransformer(
+        transformers=transformers,
+        remainder="drop",
+        verbose_feature_names_out=False,
+    )
 
 
 def format_labels(
@@ -196,67 +290,6 @@ def format_labels(
     return splits
 
 
-def make_transformer(
-    analysis: str,
-    group: str,
-    feature_columns: list[str],
-    label_columns: list[str],
-    n_quantiles: int,
-):
-    identity_transformer = FunctionTransformer(lambda x: x)
-    if analysis == "metadata":
-        feature_pipeline = make_pipeline(identity_transformer)
-    elif analysis == "autoregressive":
-        feature_pipeline = make_pipeline(
-            StandardScaler(),
-            FactorAnalysis(n_components=1),
-            FunctionTransformer(lambda x: x.rename({"factoranalysis0": "p-factor"})),
-        )
-    else:
-        feature_pipeline = make_pipeline(StandardScaler())
-    label_pipeline = make_pipeline(
-        StandardScaler(),
-        FactorAnalysis(n_components=1),
-        KBinsDiscretizer(n_bins=n_quantiles, encode="ordinal", strategy="quantile"),
-        FunctionTransformer(lambda x: x.rename({"factoranalysis0": "y_t"})),
-    )
-
-    transformers = [
-        ("indices", identity_transformer, [group]),
-        ("features", feature_pipeline, feature_columns),
-        ("labels", label_pipeline, label_columns),
-    ]
-    return ColumnTransformer(
-        transformers=transformers,
-        remainder="drop",
-        verbose_feature_names_out=False,
-    )
-
-
-def transform_within_event(
-    splits: dict[str, pl.DataFrame], transformer: Callable, event: str
-):
-    transformers = {}
-    train_groups = []
-    for name, train_group in splits["train"].group_by(event, maintain_order=True):
-        transformers[name] = transformer()
-        train_groups.append(transformers[name].fit_transform(train_group))
-    val_groups = []
-    for name, val_group in splits["val"].group_by(event, maintain_order=True):
-        val_groups.append(transformers[name].transform(val_group))
-    test_groups = []
-    for name, test_group in splits["test"].group_by(event, maintain_order=True):
-        test_groups.append(transformers[name].transform(test_group))
-    splits["train"] = pl.concat(train_groups)
-    splits["val"] = pl.concat(val_groups)
-    splits["test"] = pl.concat(test_groups)
-    return splits
-
-
-def impute_by_time_point(df: pl.DataFrame):
-    return df.with_columns(cs.numeric().fill_null(strategy="mean").over("eventname"))
-
-
 def transform_data(
     splits: dict[str, pl.DataFrame],
     group: str,
@@ -267,29 +300,23 @@ def transform_data(
     factor_model: str,
     n_quantiles: int,
 ) -> dict[str, pl.DataFrame]:
-    partial_transformer = partial(
-        make_transformer,
+    for name, split in splits.items():
+        split = split.filter(~pl.all_horizontal(pl.col(label_columns).is_null()))
+        split = split.with_columns(pl.exclude(label_columns).forward_fill().over(group))
+        splits[name] = split
+    transformer = make_transformer(
         analysis=analysis,
+        factor_model=factor_model,
         group=group,
+        event=event,
         feature_columns=feature_columns,
         label_columns=label_columns,
         n_quantiles=n_quantiles,
     )
-    for name, split in splits.items():
-        splits[name] = split.filter(
-            ~pl.all_horizontal(pl.col(label_columns).is_null())
-        ).pipe(impute_by_time_point)
-    if factor_model == "within_event":
-        splits = transform_within_event(
-            splits=splits,
-            transformer=partial_transformer,
-            event=event,
-        )
-    else:
-        transformer = partial_transformer()
-        splits["train"] = transformer.fit_transform(splits["train"])  # type: ignore
-        splits["val"] = transformer.transform(splits["val"])  # type: ignore
-        splits["test"] = transformer.transform(splits["test"])  # type: ignore
+    columns = ["src_subject_id", "eventname", "y_t"] + feature_columns
+    splits["train"] = transformer.fit_transform(splits["train"]).select(columns)  # type: ignore
+    splits["val"] = transformer.transform(splits["val"]).select(columns)  # type: ignore
+    splits["test"] = transformer.transform(splits["test"]).select(columns)  # type: ignore
     splits = format_labels(splits=splits, group=group, analysis=analysis)
     return splits
 
