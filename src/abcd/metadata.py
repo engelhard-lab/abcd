@@ -1,7 +1,6 @@
 import polars as pl
 import polars.selectors as cs
 from sklearn import set_config
-from sympy import factor
 
 from abcd.config import Features, get_config
 from abcd.preprocess import get_dataset, get_datasets

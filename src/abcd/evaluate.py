@@ -69,7 +69,7 @@ def make_curve(df: pl.DataFrame, curve: Callable, name: str):
     return df
 
 
-def bootstrap_metric(metric, outputs, labels, n_bootstraps=1000):
+def bootstrap_metric(metric, outputs, labels, n_bootstraps=200):
     bootstrap = BootStrapper(
         metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
     )

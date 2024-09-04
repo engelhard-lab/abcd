@@ -1,6 +1,8 @@
+from itertools import product
 import polars as pl
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 
 from abcd.config import Config, get_config
 
@@ -104,25 +106,7 @@ def make_metric_table(df: pl.DataFrame, groups: list[str]):
         .rename(
             {"1": "Quartile 1", "2": "Quartile 2", "3": "Quartile 3", "4": "Quartile 4"}
         )
-        .with_columns(
-            pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
-            pl.when(pl.col("Predictor set").str.contains("within_event"))
-            .then(pl.lit("Within-event"))
-            .otherwise(pl.lit("Across-event"))
-            .alias("p-factor model"),
-        )
-        .with_columns(
-            pl.col("Predictor set").replace(
-                {
-                    "questions": "{Questions}",
-                    "symptoms": "{Symptoms}",
-                    "questions_symptoms": "{Questions, Symptoms}",
-                    "questions_mri": "{Questions, MRI}",
-                    "questions_mri_symptoms": "{Questions, MRI, Symptoms}",
-                    "autoregressive": "{Previous p-factors}",
-                }
-            )
-        )
+        .with_columns(pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])))
         .sort(groups)
     )
     print(df)
@@ -158,36 +142,54 @@ def shap_table():
 def aggregate_metrics(analyses: list[str], factor_models: list[str]):
     for metric_type in ("curves", "metrics", "sensitivity_specificity"):
         metrics = []
-        for factor_model in factor_models:
-            for analysis in analyses:
-                path = f"data/analyses/{factor_model}/{analysis}/results/metrics/{metric_type}.csv"
-                metric = pl.scan_csv(path).with_columns(
-                    pl.lit(analysis).alias("Factor model")
-                )
-                metrics.append(metric)
-        pl.concat(metrics).sink_parquet(f"data/results/metrics/{metric_type}.parquet")
+        progress_bar = tqdm(
+            product(analyses, factor_models), total=len(analyses) * len(factor_models)
+        )
+        for analysis, factor_model in progress_bar:
+            path = f"data/analyses/{factor_model}/{analysis}/results/metrics/{metric_type}.csv"
+            metric = pl.scan_csv(path).with_columns(
+                pl.lit(factor_model).alias("Factor model"),
+                pl.lit(analysis).alias("Predictor set"),
+            )
+            metrics.append(metric)
+        pl.concat(metrics).with_columns(
+            pl.col("Predictor set").replace(
+                {
+                    "questions": "{Questions}",
+                    "symptoms": "{CBCL scales}",
+                    "questions_symptoms": "{Questions, CBCL scales}",
+                    "questions_mri": "{Questions, MRI}",
+                    "questions_mri_symptoms": "{Questions, MRI, CBCL scales}",
+                    "autoregressive": "{Previous p-factors}",
+                }
+            ),
+            pl.col("Factor model").replace(
+                {"within_event": "Within-event", "across_event": "Across-event"}
+            ),
+        ).sink_parquet(f"data/results/metrics/{metric_type}.parquet")
 
 
 def quartile_metric_table(df: pl.DataFrame):
     return df.filter(
         pl.col("Variable").eq("Quartile subset")
-        & pl.col("Predictor set").is_in(["{Symptoms}", "{Questions}"])
-        & pl.col("p-factor model").eq("Within-event")
-    ).drop("p-factor model", "Variable")
+        & pl.col("Predictor set").is_in(["{CBCL scales}", "{Questions}"])
+        & pl.col("Factor model").eq("Within-event")
+    ).drop("Factor model", "Variable")
 
 
 def demographic_metric_table(df: pl.DataFrame):
     return df.filter(
         pl.col("Variable").ne("Quartile subset")
-        & pl.col("p-factor model").eq("Within-event")
-    ).drop("p-factor model")
+        & pl.col("Factor model").eq("Within-event")
+    ).drop("Factor model")
 
 
 def make_tables(config: Config):
+    # quartile_counts()
     # demographic_counts()
     aggregate_metrics(analyses=config.analyses, factor_models=config.factor_models)
     df = pl.read_parquet("data/results/metrics/metrics.parquet")
-    groups = ["Predictor set", "Metric", "Variable", "Group"]
+    groups = ["Factor model", "Predictor set", "Metric", "Variable", "Group"]
     metric_table = make_metric_table(df=df, groups=groups)
     quartile_metrics = quartile_metric_table(df=metric_table)
     print(quartile_metrics)
@@ -196,7 +198,6 @@ def make_tables(config: Config):
     print(demographic_metrics)
     demographic_metrics.write_csv("data/supplement/tables/supplemental_table_2.csv")
     # shap_table()
-    # quartile_counts()
 
 
 if __name__ == "__main__":

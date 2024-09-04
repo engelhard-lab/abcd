@@ -106,37 +106,6 @@ def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
     plt.tight_layout()
     plt.savefig(f"data/plots/shap_grouped.{FORMAT}", format=FORMAT)
 
-    # def sex_shap_plot(df: pl.DataFrame, column_mapping, subset=None):
-    #     plt.figure(figsize=(10, 8))
-    #     df = pl.read_csv("data/results/sex_shap_coefs.csv")
-    #     df = df.group_by(
-    #         "Sex",
-    #     ).map_groups(lambda df: format_shap_df(df, column_mapping))
-    # order = (
-    #     df.group_by("variable", "Sex")
-    #     .agg(pl.col("value").sum().abs())
-    #     .group_by("variable")
-    #     .agg(pl.col("value").diff(null_behavior="drop").abs().mean())
-    # .explode("value")
-    # .sort("value", descending=True)
-    # ["variable"]
-    # .to_list()
-    # )
-    # print(order)
-    # g = sns.pointplot(
-    #     data=df.to_pandas(),
-    #     x="value",
-    #     y="variable",
-    #     hue="Sex",
-    #     linestyles="none",
-    #     # order=order,
-    # )
-    # g.set(ylabel="Predictor group", xlabel="Absolute summed SHAP values")
-    # g.yaxis.grid(True)
-    # plt.axvline(x=0, color="black", linestyle="--")
-    # plt.tight_layout()
-    # plt.savefig(f"data/plots/sex_shap.{FORMAT}", format=FORMAT)
-
 
 def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
     plt.figure()
@@ -185,26 +154,26 @@ def format_shap_values(shap_values_list, X, sex):
 
 
 def quartile_curves():
-    df = pl.read_csv("data/tables/analyses_curves.csv")
+    df = pl.read_parquet("data/results/metrics/curves.parquet")
     df = (
         df.filter(
             pl.col("Quartile at t+1").eq(4)
             & pl.col("Variable").eq("Quartile subset")
-            & pl.col("Analysis").is_in(["Symptoms", "Questions"])
-            & pl.col("Curve").eq("Model")
+            & pl.col("Predictor set").is_in(["{CBCL scales}", "{Questions}"])
+            & pl.col("Factor model").eq("Within-event")
             & pl.col("y").ne(0)
         )
         .with_columns(
             pl.col("Metric").cast(pl.Enum(["ROC", "PR"])),
             pl.col("Group").cast(pl.Enum(["{1,2,3}", "{4}", "{1,2,3,4}"])),
         )
-        .sort("Metric", "Group", "Analysis", "x")
+        .sort("Factor model", "Predictor set", "Metric", "Group", "y")
     )
     g = sns.relplot(
         data=df.to_pandas(),
         x="x",
         y="y",
-        hue="Analysis",
+        hue="Predictor set",
         row="Metric",
         col="Group",
         kind="line",
@@ -228,7 +197,6 @@ def quartile_curves():
         else:
             ax.text(0.95, 0.95, label, fontsize=font_size)
             ax.set_xlabel("Recall (sensitivity)")
-            print(group["y"].min())
             ax.axhline(
                 group.filter(pl.col("y").ne(0))["y"].min(),
                 linestyle="--",
@@ -238,90 +206,12 @@ def quartile_curves():
     plt.savefig(f"data/plots/curves.{FORMAT}", format=FORMAT)
 
 
-def demographic_curves():
-    df = pl.read_csv("data/results/curves.csv")
-    df = (
-        df.filter(
-            pl.col("Variable").ne("Quartile subset"),
-            pl.col("Next quartile").eq(4),
-            pl.col("Group").ne("16"),
-        )
-        .with_columns(
-            pl.col("Metric").cast(pl.Enum(["ROC", "PR"])),
-            pl.col("Curve").cast(pl.Enum(["Model", "Baseline"])),
-            pl.when(pl.col("Curve").eq("Model") & pl.col("Metric").eq("ROC"))
-            .then(pl.col("x"))
-            .when(pl.col("Metric").eq("PR"))
-            .then(pl.col("x"))
-            .otherwise(pl.lit(None)),
-        )
-        .sort("Metric", "Curve", "Variable", "Group")
-    )
-    g = sns.FacetGrid(
-        df,
-        row="Variable",
-        col="Metric",
-        height=4,
-        aspect=1.5,
-        sharex=False,
-        sharey=False,
-    )
-    for (row_var, col_var), facet_df in df.group_by("Variable", "Metric"):  # type: ignore
-        ax = g.axes_dict[(row_var, col_var)]
-        facet_df = facet_df.sort(pl.col("Group").cast(pl.Float32, strict=False))
-        row_var = str(row_var)
-        sns.lineplot(
-            x="x",
-            y="y",
-            hue=row_var,
-            style="Curve",
-            data=facet_df.rename({"Group": row_var}),
-            ax=ax,
-            errorbar=None,
-        )
-        if col_var == "PR":
-            ax.set_ylabel("Positive predictive value")
-            ax.set_xlabel(xlabel="Sensitivity (true positive rate)")
-            sns.move_legend(ax, "upper left", bbox_to_anchor=(1, 1))
-        else:
-            ax.legend().remove()
-            ax.set_ylabel("Sensitivity (true positive rate)")
-            ax.set_xlabel("Type I error (false positive rate)")
-            ax.plot([0, 1], [0, 1], linestyle="--", color="black")
-    g.set_titles("")
-    plt.tight_layout()
-    plt.savefig(
-        f"data/plots/demographic_curves.{FORMAT}", format=FORMAT, bbox_inches="tight"
-    )
-
-
 def cbcl_distributions(config: Config):
-    cbcl_scales = config.features.mh_p_cbcl.columns + [
-        "cbcl_scr_syn_internal_t",
-        "cbcl_scr_syn_external_t",
-    ]
-    df = pl.read_csv(
-        "data/labels/mh_p_cbcl.csv",
-        columns=["src_subject_id", "eventname"] + cbcl_scales,
-    )
-    bin_labels = [str(i) for i in range(config.preprocess.n_quantiles)]
-    p_factor = (
-        pl.read_csv("data/labels/p_factors.csv")
-        .select(["src_subject_id", "eventname", "p_factor"])
-        .with_columns(
-            pl.col("p_factor")
-            .qcut(
-                quantiles=config.preprocess.n_quantiles,
-                labels=bin_labels,
-                allow_duplicates=True,
-            )
-            .cast(pl.Int32)
-            .add(1)
-        )
-    )
-    df = df.join(p_factor, on=["src_subject_id", "eventname"], how="inner").melt(
-        id_vars=["src_subject_id", "eventname", "p_factor"]
-    )
+    cbcl_scales = config.features.mh_p_cbcl.columns
+    # + [
+    #     "cbcl_scr_syn_internal_t",
+    #     "cbcl_scr_syn_external_t",
+    # ]
     cbcl_names = [
         "Anxious/Depressed",
         "Withdrawn/Depressed",
@@ -331,29 +221,33 @@ def cbcl_distributions(config: Config):
         "Attention Problems",
         "Rule-Breaking Behavior",
         "Aggressive Behavior",
-        "Internalizing",
-        "Externalizing",
+        # "Internalizing",
+        # "Externalizing",
     ]
     name_mapping = dict(zip(cbcl_scales, cbcl_names))
     df = (
-        df.with_columns(
-            pl.col("variable").replace(name_mapping),
-            pl.col("p_factor").cast(pl.String).alias("Quartile"),
+        pl.read_csv(
+            "data/analyses/within_event/symptoms/analytic/train.csv",
+            columns=["src_subject_id", "y_{t+1}"] + cbcl_scales,
         )
-        .rename({"variable": "CBCL Syndrome Scale", "value": "t-score"})
-        .sort("Quartile")
+        .rename({"y_{t+1}": "p-factor quartile"})
+        .unpivot(index="p-factor quartile", on=cbcl_scales)
+        .rename({"variable": "CBCL scale", "value": "t-score"})
+        .with_columns(
+            pl.col("CBCL scale").replace(name_mapping),
+            pl.col("p-factor quartile").add(1).cast(pl.Int32),
+        )
     )
-    sns.set_theme(font_scale=3.0)
+    sns.set_theme(font_scale=2.0)
     g = sns.catplot(
-        data=df,
-        x="Quartile",
+        data=df.to_pandas(),
+        x="p-factor quartile",
         y="t-score",
-        col="CBCL Syndrome Scale",
-        kind="box",
+        col="CBCL scale",
+        kind="boxen",
         col_wrap=4,
         height=6,
     )
-    # g.tick_params(axis="x", rotation=30)
     g.set_titles("{col_name}")
     plt.savefig(
         f"data/plots/cbcl_distributions.{FORMAT}",
@@ -367,7 +261,7 @@ def analysis_comparison():
     df = df.filter(
         pl.col("Variable").eq("Quartile subset")
         & pl.col("Metric").eq("AUROC")
-        & pl.col("p-factor model").eq("Across-event")
+        & pl.col("Factor model").eq("Within-event")
     )
     g = sns.catplot(
         data=df.to_pandas(),
@@ -392,7 +286,7 @@ def analysis_comparison():
 def p_factor_model_comparison():
     df = pl.read_parquet("data/results/metrics/metrics.parquet")
     df = df.filter(
-        pl.col("Predictor set").is_in(["{Questions}", "{Symptoms}"])
+        pl.col("Predictor set").is_in(["{Questions}", "{CBCL scales}"])
         & pl.col("Group").eq("{1,2,3}")
         & pl.col("Metric").eq("AUROC")
     )
@@ -401,7 +295,7 @@ def p_factor_model_comparison():
         x="Quartile at t+1",
         y="value",
         kind="bar",
-        hue="p-factor model",
+        hue="Factor model",
         col="Predictor set",
         errorbar="pi",
     )
@@ -420,11 +314,11 @@ def plot(config):
     sns.set_theme(style="darkgrid", palette="deep", font_scale=2.0)
     sns.set_context("paper", font_scale=2.0)
 
-    analysis_comparison()
+    # analysis_comparison()
     # quartile_curves()
-    p_factor_model_comparison()
+    # p_factor_model_comparison()
 
-    # cbcl_distributions(config=config)
+    cbcl_distributions(config=config)
     # demographic_curves()
 
     # test_dataloader = iter(dataloader)

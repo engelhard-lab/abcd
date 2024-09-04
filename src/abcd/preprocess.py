@@ -64,12 +64,9 @@ def make_adi(df: pl.DataFrame, join_on: list[str]):
         "reshist_addr2_adi_perc",
         "reshist_addr3_adi_perc",
     ]
-    return (
-        df.with_columns(
-            pl.mean_horizontal(adi_columns).forward_fill().alias("adi_percentile")
-        ).select(*join_on, "adi_percentile")
-        # .drop(adi_columns)
-    )
+    return df.with_columns(
+        pl.mean_horizontal(adi_columns).forward_fill().alias("adi_percentile")
+    ).select(*join_on, "adi_percentile")
 
 
 def get_datasets(config: Config) -> list[pl.DataFrame]:
