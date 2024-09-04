@@ -3,7 +3,7 @@ import polars.selectors as cs
 from sklearn import set_config
 
 from abcd.config import Features, get_config
-from abcd.preprocess import get_dataset, get_datasets
+from abcd.preprocess import get_dataset, get_feature_sets
 
 
 def rename_questions() -> pl.Expr:
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     pl.Config().set_tbl_cols(14)
     set_config(transform_output="polars")
     config = get_config(analysis="metadata")
-    datasets = get_datasets(config=config)
+    datasets = get_feature_sets(config=config)
     make_variable_metadata(dfs=datasets, features=config.features)
     splits = get_dataset(analysis="metadata", factor_model="within_year", config=config)
     metadata = make_subject_metadata(splits=splits)

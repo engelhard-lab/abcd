@@ -69,7 +69,7 @@ def make_adi(df: pl.DataFrame, join_on: list[str]):
     ).select(*join_on, "adi_percentile")
 
 
-def get_datasets(config: Config) -> list[pl.DataFrame]:
+def get_feature_sets(config: Config) -> list[pl.DataFrame]:
     columns_to_drop = (
         "_nm",
         "_nt",
@@ -122,29 +122,6 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         )
         dfs.append(df)
     return dfs
-
-
-def filter_data(df: pl.DataFrame, label_columns: list[str], group: str):
-    return df.filter(~pl.all_horizontal(pl.col(label_columns).is_null())).with_columns(
-        pl.all().forward_fill().over(group)
-    )
-
-
-def impute_within_subject(df: pl.DataFrame):
-    return df.with_columns(pl.all().forward_fill().over("src_subject_id"))
-
-
-def generate_data(config: Config):
-    datasets = get_datasets(config=config)
-    return (
-        join_dataframes(dfs=datasets, join_on=config.join_on)
-        .pipe(
-            filter_data,
-            label_columns=config.features.mh_p_cbcl.columns,
-            group=config.join_on[0],
-        )
-        .pipe(impute_within_subject)
-    )
 
 
 def get_brain_features(config: Config):
@@ -228,7 +205,7 @@ def make_transformer(
 ):
     identity_transformer = FunctionTransformer(lambda x: x)
     if analysis == "metadata":
-        feature_pipeline = identity_transformer
+        feature_pipeline = make_pipeline(identity_transformer)
     elif analysis == "autoregressive":
         feature_pipeline = make_pipeline(
             StandardScaler(),
@@ -243,6 +220,7 @@ def make_transformer(
         KBinsDiscretizer(n_bins=n_quantiles, encode="ordinal", strategy="quantile"),
         FunctionTransformer(lambda x: x.rename({"factoranalysis0": "y_t"})),
     )
+
     transformers = [
         ("indices", identity_transformer, [group]),
         ("features", feature_pipeline, feature_columns),
@@ -253,10 +231,6 @@ def make_transformer(
         remainder="drop",
         verbose_feature_names_out=False,
     )
-
-
-def impute_by_time_point(df: pl.DataFrame):
-    return df.with_columns(cs.numeric().fill_null(strategy="mean").over("eventname"))
 
 
 def transform_within_event(
@@ -279,8 +253,12 @@ def transform_within_event(
     return splits
 
 
+def impute_by_time_point(df: pl.DataFrame):
+    return df.with_columns(cs.numeric().fill_null(strategy="mean").over("eventname"))
+
+
 def transform_data(
-    splits: dict,
+    splits: dict[str, pl.DataFrame],
     group: str,
     event: str,
     feature_columns: list[str],
@@ -298,7 +276,9 @@ def transform_data(
         n_quantiles=n_quantiles,
     )
     for name, split in splits.items():
-        splits[name] = split.pipe(impute_by_time_point)
+        splits[name] = split.filter(
+            ~pl.all_horizontal(pl.col(label_columns).is_null())
+        ).pipe(impute_by_time_point)
     if factor_model == "within_event":
         splits = transform_within_event(
             splits=splits,
@@ -307,15 +287,16 @@ def transform_data(
         )
     else:
         transformer = partial_transformer()
-        splits["train"] = transformer.fit_transform(splits["train"])
-        splits["val"] = transformer.transform(splits["val"])
-        splits["test"] = transformer.transform(splits["test"])
+        splits["train"] = transformer.fit_transform(splits["train"])  # type: ignore
+        splits["val"] = transformer.transform(splits["val"])  # type: ignore
+        splits["test"] = transformer.transform(splits["test"])  # type: ignore
     splits = format_labels(splits=splits, group=group, analysis=analysis)
     return splits
 
 
 def make_dataset(config: Config, analysis: str, factor_model: str):
-    df = generate_data(config=config)
+    feature_sets = get_feature_sets(config=config)
+    df = join_dataframes(dfs=feature_sets, join_on=config.join_on)
     df.write_csv(config.filepaths.data.raw.dataset)
     group, event = config.join_on
     splits = split_data(
