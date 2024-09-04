@@ -104,13 +104,15 @@ def make_metric_table(df: pl.DataFrame, groups: list[str]):
         .sort("Quartile at t+1")
         .pivot(on="Quartile at t+1", values="value", index=groups)
         .rename(
-            {"1": "Quartile 1", "2": "Quartile 2", "3": "Quartile 3", "4": "Quartile 4"}
+            {"1": "No risk", "2": "Low risk", "3": "Moderate risk", "4": "High risk"}
         )
         .with_columns(pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])))
-        .sort(groups)
     )
-    print(df)
-    return df
+    group_order = [
+        pl.col("Group").cast(pl.Int32, strict=False) if group == "Group" else group
+        for group in groups
+    ]
+    return df.sort(group_order)
 
 
 def shap_table():

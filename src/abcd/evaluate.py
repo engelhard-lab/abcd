@@ -22,9 +22,7 @@ def make_predictions(config: Config, model: Network, data_module: ABCDDataModule
     outputs, labels = zip(*predictions)
     outputs = torch.concat(outputs)
     labels = torch.concat(labels)
-    metadata = pl.read_csv(config.filepaths.data.raw.metadata).with_columns(
-        pl.col("Quartile at t", "Quartile at t+1").add(1)
-    )
+    metadata = pl.read_csv(config.filepaths.data.raw.metadata)
     test_metadata = metadata.filter(pl.col("Split").eq("test"))
     df = pl.DataFrame({"output": outputs.cpu().numpy(), "label": labels.cpu().numpy()})
     return pl.concat([test_metadata, df], how="horizontal")
@@ -69,7 +67,7 @@ def make_curve(df: pl.DataFrame, curve: Callable, name: str):
     return df
 
 
-def bootstrap_metric(metric, outputs, labels, n_bootstraps=200):
+def bootstrap_metric(metric, outputs, labels, n_bootstraps=500):
     bootstrap = BootStrapper(
         metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
     )

@@ -5,9 +5,6 @@ from sklearn import set_config
 from abcd.config import Features, get_config
 from abcd.preprocess import get_dataset, get_datasets
 
-RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
-SEX_MAPPING = {0: "Female", 1: "Male"}
-
 
 def rename_questions() -> pl.Expr:
     return (
@@ -78,26 +75,20 @@ def format_questions() -> pl.Expr:
 
 def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
     variables = make_variable_df(dfs=dfs, features=features)
-    questions = (
-        pl.read_csv(
-            "data/raw/abcd_data_dictionary.csv",
-            columns=["table_name", "var_name", "var_label", "notes"],
-        )
-        .rename(
-            {
-                "table_name": "table",
-                "var_name": "variable",
-                "var_label": "question",
-                "notes": "response",
-            }
-        )
-        .drop("table_name")
+    df = pl.read_csv(
+        "data/raw/abcd_data_dictionary.csv",
+        columns=["table_name", "var_name", "var_label", "notes"],
+    ).rename(
+        {
+            "table_name": "table",
+            "var_name": "variable",
+            "var_label": "question",
+            "notes": "response",
+        }
     )
     df = (
         (
-            variables.join(
-                questions, on=["table", "variable"], how="left", coalesce=True
-            )
+            variables.join(df, on=["table", "variable"], how="left", coalesce=True)
             .with_columns(
                 format_questions(),
                 pl.col("dataset").str.replace_all("_", " "),
@@ -116,6 +107,11 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
         .sort("dataset", "respondent", "variable")
     )
     df.write_csv("data/variables.csv")
+
+
+RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
+SEX_MAPPING = {0: "Female", 1: "Male"}
+FOLLOW_UP_MAPPING = {0: "Baseline", 1: "1-year", 2: "2-year", 3: "3-year"}
 
 
 def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
@@ -138,26 +134,32 @@ def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
         # "parent_highest_education": "Parent highest education",
         # "demo_comb_income_v2": "Combined income",
     }
-    return (
-        df.rename(rename_mapping)
-        .select("Split", *rename_mapping.values())
+    quartiles = ["1", "2", "3", "4"]
+    df = (
+        df.select("Split", *rename_mapping.keys())
+        .rename(rename_mapping)
         .with_columns(
-            pl.col("Sex").replace(SEX_MAPPING),
-            pl.col("Race").replace(RACE_MAPPING),
+            pl.col("Sex").replace_strict(SEX_MAPPING),
+            pl.col("Race").replace_strict(RACE_MAPPING),
+            pl.col("Follow-up event")
+            .replace_strict(FOLLOW_UP_MAPPING)
+            .cast(pl.Enum(["Baseline", "1-year", "2-year", "3-year"])),
             pl.col("Age").truediv(12).round(0).cast(pl.Int32),
-            pl.col("ADI quartile").qcut(quantiles=4, labels=["1", "2", "3", "4"]),
-            pl.col("Follow-up event").cast(
-                pl.Enum(["Baseline", "1-year", "2-year", "3-year"])
-            ),
+            pl.col("ADI quartile")
+            .qcut(quantiles=4, labels=quartiles)
+            .cast(pl.Enum(quartiles)),
             pl.col("Event year").str.to_date(format="%m/%d/%Y").dt.year(),
+            pl.col("Quartile at t", "Quartile at t+1").cast(pl.Int32).add(1),
         )
         .with_columns(cs.numeric().cast(pl.Int32))
     )
+    return df
 
 
 if __name__ == "__main__":
+    pl.Config().set_tbl_cols(14)
     set_config(transform_output="polars")
-    config = get_config()
+    config = get_config(analysis="metadata")
     datasets = get_datasets(config=config)
     make_variable_metadata(dfs=datasets, features=config.features)
     splits = get_dataset(analysis="metadata", factor_model="within_year", config=config)

@@ -18,15 +18,15 @@ from abcd.tune import tune
 
 
 def main():
-    pl.Config(tbl_cols=14)
+    pl.Config().set_tbl_cols(14)
     set_config(transform_output="polars")
     config = get_config()
+    seed_everything(config.random_seed)
     analyses = product(config.analyses, config.factor_models)
     progress_bar = tqdm(
         analyses, total=len(config.analyses) * len(config.factor_models)
     )
     for analysis, factor_model in progress_bar:
-        seed_everything(config.random_seed)
         config = get_config(analysis=analysis, factor_model=factor_model)
         splits = get_dataset(
             analysis=analysis, factor_model=factor_model, config=config
