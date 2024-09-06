@@ -111,6 +111,7 @@ class Config(BaseModel):
     plot: bool
     tables: bool
     n_trials: int
+    n_bootstraps: int
     verbose: bool
     n_trials: int
     join_on: list[str]

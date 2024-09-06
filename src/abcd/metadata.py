@@ -106,7 +106,7 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
         .unique(subset=["variable"])
         .sort("dataset", "respondent", "variable")
     )
-    df.write_csv("data/variables.csv")
+    df.write_csv("data/supplement/files/supplemental_file_1.csv")
 
 
 RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}

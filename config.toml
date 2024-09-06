@@ -3,22 +3,23 @@ random_seed = 42
 regenerate = false
 tune = false
 log = false
-predict = true
-evaluate = true
+predict = false
+evaluate = false
 shap = false
-plot = false
-tables = true
+plot = true
+tables = false
 verbose = false
 n_trials = 32
+n_bootstraps = 100
 join_on = ["src_subject_id", "eventname"]
-factor_models = ["within_event", "across_event"]
+factor_models = ["within_event"] #, "across_event"]
 analyses = [
-    "questions",
+    # "questions",
     "questions_mri",
-    "questions_symptoms",
+    # "questions_symptoms",
     "symptoms",
     "questions_mri_symptoms",
-    "autoregressive",
+    # "autoregressive",
 ]
 device = "mps"
 

@@ -67,7 +67,7 @@ def make_curve(df: pl.DataFrame, curve: Callable, name: str):
     return df
 
 
-def bootstrap_metric(metric, outputs, labels, n_bootstraps=500):
+def bootstrap_metric(metric, outputs, labels, n_bootstraps: int):
     bootstrap = BootStrapper(
         metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
     )
@@ -78,7 +78,7 @@ def bootstrap_metric(metric, outputs, labels, n_bootstraps=500):
     return pl.DataFrame(bootstraps, schema=columns)
 
 
-def make_metrics(df: pl.DataFrame):
+def make_metrics(df: pl.DataFrame, n_bootstraps: int):
     if df.shape[0] < 10:
         return pl.DataFrame(
             {
@@ -92,12 +92,12 @@ def make_metrics(df: pl.DataFrame):
     outputs, labels = get_predictions(df)
     auroc = MulticlassAUROC(num_classes=outputs.shape[-1], average="none")
     ap = MulticlassAveragePrecision(num_classes=outputs.shape[-1], average="none")
-    bootstrapped_auroc = bootstrap_metric(auroc, outputs, labels).with_columns(
-        pl.lit("AUROC").alias("Metric")
-    )
-    bootstrapped_ap = bootstrap_metric(ap, outputs, labels).with_columns(
-        pl.lit("AP").alias("Metric")
-    )
+    bootstrapped_auroc = bootstrap_metric(
+        auroc, outputs, labels, n_bootstraps=n_bootstraps
+    ).with_columns(pl.lit("AUROC").alias("Metric"))
+    bootstrapped_ap = bootstrap_metric(
+        ap, outputs, labels, n_bootstraps=n_bootstraps
+    ).with_columns(pl.lit("AP").alias("Metric"))
     df = (
         pl.concat(
             [bootstrapped_auroc, bootstrapped_ap],
@@ -118,29 +118,35 @@ def calc_sensitivity_and_specificity(df: pl.DataFrame):
         pl.col("Variable").eq("Quartile subset") & pl.col("Group").eq("{1,2,3}")
     )
     outputs, labels = get_predictions(df=df)
-    specificity = MulticlassSpecificityAtSensitivity(
-        num_classes=outputs.shape[-1], min_sensitivity=0.5
+    min_sensitivity = 0.8
+    specificity_metric = MulticlassSpecificityAtSensitivity(
+        num_classes=outputs.shape[-1], min_sensitivity=min_sensitivity
     )
-    spec = specificity(outputs, labels)
-    sensitivity = MulticlassSensitivityAtSpecificity(
-        num_classes=outputs.shape[-1], min_specificity=0.5
-    )
-    sens = sensitivity(outputs, labels)
-    spec = pl.DataFrame(
+    specificity, threshold = specificity_metric(outputs, labels)
+    specificity_df = pl.DataFrame(
         {
+            "Risk": ["None", "Low", "Moderate", "High"],
             "Metric": "Specificity",
-            "Value": spec[0].numpy().round(decimals=2),
-            "Threshold": spec[1].numpy().round(decimals=2),
+            "Minimum": f"Sensitivity >= {min_sensitivity}",
+            "Value": specificity.numpy().round(decimals=2),
+            "Threshold": threshold[1].numpy().round(decimals=2),
         }
     )
-    sens = pl.DataFrame(
+    min_specificity = 0.8
+    sensitivity_metric = MulticlassSensitivityAtSpecificity(
+        num_classes=outputs.shape[-1], min_specificity=min_specificity
+    )
+    sensitivity, threshold = sensitivity_metric(outputs, labels)
+    sensitivity_df = pl.DataFrame(
         {
+            "Risk": ["None", "Low", "Moderate", "High"],
             "Metric": "Sensitivity",
-            "Value": sens[0].numpy().round(decimals=2),
-            "Threshold": sens[1].numpy().round(decimals=2),
+            "Minimum": f"Specificity >= {min_specificity}",
+            "Value": sensitivity.numpy().round(decimals=2),
+            "Threshold": threshold.numpy().round(decimals=2),
         }
     )
-    return pl.concat([spec, sens])
+    return pl.concat([specificity_df, sensitivity_df])
 
 
 def make_prevalence(df: pl.DataFrame):
@@ -148,7 +154,7 @@ def make_prevalence(df: pl.DataFrame):
         pl.col("Quartile at t+1")
         .count()
         .over("Variable", "Group", "Quartile at t+1")
-        .truediv(pl.col("Quartile at t+1").count().over("Variable"))
+        .truediv(pl.col("Quartile at t+1").count().over("Variable", "Group"))
         .alias("Prevalence"),
     ).select(["Variable", "Group", "Quartile at t+1", "Prevalence"])
 
@@ -188,7 +194,9 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
     df = pl.concat([df_all, df]).drop_nulls("Group")
     grouped_df = df.group_by("Variable", "Group", maintain_order=True)
     prevalence = make_prevalence(df)
-    metrics = grouped_df.map_groups(make_metrics)
+    metrics = grouped_df.map_groups(
+        partial(make_metrics, n_bootstraps=config.n_bootstraps)
+    )
     metrics = metrics.join(prevalence, on=["Variable", "Group", "Quartile at t+1"])
     metrics.write_csv(config.filepaths.data.results.metrics / "metrics.csv")
     pr_curve = grouped_df.map_groups(

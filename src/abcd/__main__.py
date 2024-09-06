@@ -27,6 +27,8 @@ def main():
         analyses, total=len(config.analyses) * len(config.factor_models)
     )
     for analysis, factor_model in progress_bar:
+        if not any([config.evaluate, config.tune, config.shap]):
+            continue
         config = get_config(analysis=analysis, factor_model=factor_model)
         splits = get_dataset(
             analysis=analysis, factor_model=factor_model, config=config
@@ -54,10 +56,14 @@ def main():
         )
         if config.evaluate:
             evaluate_model(data_module=data_module, config=config, model=model)
-    if config.shap:
-        make_shap(
-            config=config, model=model, data_module=data_module, analysis=analysis
-        )
+        if config.shap:
+            make_shap(
+                config=config,
+                model=model,
+                data_module=data_module,
+                analysis=analysis,
+                factor_model=factor_model,
+            )
     if config.tables:
         make_tables(config=config)
     if config.plot:

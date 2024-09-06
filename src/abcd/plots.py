@@ -3,6 +3,7 @@ import numpy as np
 import polars as pl
 import pandas as pd
 import seaborn as sns
+from sklearn.utils import resample
 from toml import load
 
 # from shap import summary_plot
@@ -14,42 +15,46 @@ from abcd.config import Config
 FORMAT = "pdf"
 
 
-def shap_plot(analysis, metadata, textwrap_width):
+def shap_plot(analysis, factor_model, metadata, textwrap_width):
     n_display = 20
-    plt.figure(figsize=(30, 14))
-    metadata = metadata.rename({"dataset": "Dataset"}).with_columns(
-        (pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset")
+    plt.figure(figsize=(30, 16))
+    metadata = metadata.rename({"dataset": "Dataset"})
+    # .with_columns(
+    #     (pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset")
+    # )
+    shap_coefs = pl.read_csv(
+        f"data/analyses/{factor_model}/{analysis}/results/shap_coefficients.csv"
     )
-    shap_coefs = pl.read_csv(f"data/analyses/{analysis}/results/shap_coefficients.csv")
-    df = shap_coefs.join(other=metadata, on="variable", how="inner")
-    print(df)
+    df = shap_coefs.join(other=metadata, on="variable", how="inner").with_columns(
+        (pl.col("respondent") + ": " + pl.col("Dataset")).alias("Dataset")
+    )
     top_questions = (
-        df.group_by("question")
-        .agg(pl.col("value").abs().mean())
+        df.group_by("respondent", "question")
+        .agg(pl.col("value").sum().abs())
         .sort(by="value")
         .tail(n_display)["question"]
         .reverse()
         .to_list()
     )
     df = df.filter(pl.col("question").is_in(top_questions)).select(
-        ["question", "value", "Dataset"]
+        ["question", "value", "Dataset", "respondent"]
     )
-    sns.set_context("paper", font_scale=2.5)
+    sns.set_context("paper", font_scale=2.7)
     g = sns.pointplot(
         data=df.to_pandas(),
         x="value",
         y="question",
         hue="Dataset",
-        errorbar=("sd", 2),
+        errorbar="pi",
         linestyles="none",
         order=top_questions,
     )
-    sns.move_legend(g, "upper left", bbox_to_anchor=(1, 1))
+    # sns.move_legend(g, "upper left", bbox_to_anchor=(1, 1))
     g.set(
-        xlabel="SHAP value coefficient (impact of predictor on model output)",
+        xlabel="SHAP value coefficient",
         ylabel="Predictor",
     )
-    g.autoscale(enable=True)
+    # g.autoscale(enable=True)
     g.set_yticks(g.get_yticks())
     labels = [
         textwrap.fill(label.get_text(), textwrap_width) for label in g.get_yticklabels()
@@ -59,52 +64,45 @@ def shap_plot(analysis, metadata, textwrap_width):
 
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
-    plt.savefig(f"data/plots/shap_coefs_{analysis}.{FORMAT}", format=FORMAT)
+    plt.savefig(f"data/supplement/plots/supplemental_figure_3.{FORMAT}", format=FORMAT)
 
 
-def format_shap_df(df: pl.DataFrame, column_mapping):
-    df = (
-        df.transpose(include_header=True, header_name="variable")
-        .with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
-        .group_by("dataset")
-        .sum()
-        .drop("variable")
-    )
-    columns = df.drop_in_place("dataset")
-    df = df.transpose(column_names=columns).melt().with_columns(pl.col("value").abs())
-    return df
-
-
-def grouped_shap_plot(shap_values: pl.DataFrame, column_mapping):
+def grouped_shap_plot(shap_values: pl.DataFrame, metadata: pl.DataFrame):
     plt.figure(figsize=(16, 8))
-    shap_values = format_shap_df(shap_values, column_mapping)
-    shap_values = shap_values.with_columns(
-        pl.col("variable").replace(
-            {
-                "Demographics": "Age and sex",
-                "Spatiotemporal": "Site and year",
-            }
-        )
+    shap_values = (
+        shap_values.unpivot()
+        .join(metadata, on="variable", how="inner")
+        .rename({"respondent": "Respondent"})
     )
+    n_bootstraps = 500
+    bootstraps = []
+    for boot in range(n_bootstraps):
+        resampled = resample(shap_values)
+        resampled = resampled.with_columns(pl.lit(boot).alias("boot"))  # type: ignore
+        bootstraps.append(resampled)
+    shap_values = pl.concat(bootstraps)
+    shap_values = shap_values.group_by("dataset", "Respondent", "boot").sum()
     order = (
-        shap_values.group_by("variable")
-        .sum()
-        .sort("value", descending=True)["variable"]
+        shap_values.group_by("dataset", "Respondent", "boot")
+        .agg(pl.col("value").sum().abs())
+        .sort("value", descending=True)["dataset"]
         .to_list()
     )
     g = sns.pointplot(
-        data=shap_values,
+        data=shap_values.to_pandas(),
         x="value",
-        y="variable",
+        y="dataset",
+        hue="Respondent",
         linestyles="none",
         order=order,
-        errorbar=("se", 2),
+        errorbar="pi",
     )
-    g.set(ylabel="Predictor group", xlabel="Absolute summed SHAP values")
+    sns.move_legend(g, "lower right")
+    g.set(ylabel="Predictor group", xlabel="Summed SHAP values")
     g.yaxis.grid(True)
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
-    plt.savefig(f"data/plots/shap_grouped.{FORMAT}", format=FORMAT)
+    plt.savefig(f"data/plots/figure_3.{FORMAT}", format=FORMAT)
 
 
 def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
@@ -163,11 +161,34 @@ def quartile_curves():
             & pl.col("Factor model").eq("Within-event")
             & pl.col("y").ne(0)
         )
+        .drop("Factor model", "Variable")
         .with_columns(
             pl.col("Metric").cast(pl.Enum(["ROC", "PR"])),
-            pl.col("Group").cast(pl.Enum(["{1,2,3}", "{4}", "{1,2,3,4}"])),
+            pl.col("Group")
+            .replace(
+                {
+                    "{1,2,3}": "High-risk conversion",
+                    "{4}": "High-risk persistence",
+                    "{1,2,3,4}": "High-risk persistence or conversion",
+                }  # TODO change this at the source
+            )
+            .cast(
+                pl.Enum(
+                    [
+                        "High-risk conversion",
+                        "High-risk persistence",
+                        "High-risk persistence or conversion",
+                    ]
+                )
+            ),
+            pl.col("Predictor set").replace(
+                {
+                    "{CBCL scales}": "CBCL scales",
+                    "{Questions}": "Questions",
+                }  # TODO change this at the source
+            ),
         )
-        .sort("Factor model", "Predictor set", "Metric", "Group", "y")
+        .sort("Predictor set", "Metric", "Group", "y")
     )
     g = sns.relplot(
         data=df.to_pandas(),
@@ -181,7 +202,7 @@ def quartile_curves():
         palette="deep",
         facet_kws={"sharex": False, "sharey": False},
     )
-    g.set_titles("")
+    g.set_titles("{col_name}")
     font_size = 24
     labels = ["a", "b", "c", "d", "e", "f"]
     grouped_df = df.partition_by(["Metric", "Group"], maintain_order=True)
@@ -202,8 +223,9 @@ def quartile_curves():
                 linestyle="--",
                 color="black",
             )
-        ax.set_ylim(-0.05, 1.05)
-    plt.savefig(f"data/plots/curves.{FORMAT}", format=FORMAT)
+        ax.set_ylim(0.0, 1.05)
+    plt.subplots_adjust(hspace=0.3)  # , wspace=0.4
+    plt.savefig(f"data/plots/figure_2.{FORMAT}", format=FORMAT)
 
 
 def cbcl_distributions(config: Config):
@@ -315,21 +337,28 @@ def plot(config):
     sns.set_context("paper", font_scale=2.0)
 
     # analysis_comparison()
-    # quartile_curves()
+    quartile_curves()
     # p_factor_model_comparison()
 
-    cbcl_distributions(config=config)
+    # cbcl_distributions(config=config)
     # demographic_curves()
 
-    # test_dataloader = iter(dataloader)
-    # X, _ = next(test_dataloader)
-    # X = pd.DataFrame(X.mean(dim=1), columns=feature_names)  # .view(-1, X.shape[2])
-
-    # X = pl.read_csv("data/analytic/test.csv", n_rows=1).drop(
-    #     ["src_subject_id", "y_{t+1}"]
+    # metadata = (
+    #     pl.read_csv("data/supplement/files/supplemental_file_1.csv").filter(
+    #         pl.col("dataset").ne("Site and measurement")
+    #     )
+    # .with_columns(
+    #     pl.col("dataset").replace({"Site and measurement": "Follow-up event"})
     # )
-    # metadata = pl.read_csv("data/variables.csv")
-    # shap_plot(analysis="questions_mri", metadata=metadata, textwrap_width=75)
+    # )  # FIXME file_1.csv -> table_1.csv
+    # analysis = "questions_mri"
+    # factor_model = "within_event"
+    # shap_plot(
+    #     analysis=analysis,
+    #     factor_model=factor_model,
+    #     metadata=metadata,
+    #     textwrap_width=80,
+    # )
     # shap_plot(analysis="symptoms", metadata=metadata, textwrap_width=75)
     # shap_plot(analysis="questions_symptoms", metadata=metadata, textwrap_width=75)
 
@@ -339,15 +368,16 @@ def plot(config):
     #     subset=["DTIFA Youth", "RSFMRI Youth", "FMRI Task Youth"],
     #     textwrap_width=50,
     # )
-
     # column_mapping = dict(zip(metadata["variable"], metadata["dataset"]))
-    # shap_values = pl.read_csv("data/results/shap_values.csv")
+    # shap_values = pl.read_csv(
+    #     f"data/analyses/{factor_model}/{analysis}/results/shap_values.csv"
+    # )
+    # grouped_shap_plot(shap_values=shap_values, metadata=metadata)
     # male_shap_values = format_shap_values(shap_values_list, X, sex="Male")
     # shap_values_list = torch_load("data/results/shap_values_female.pt")
     # female_shap_values = format_shap_values(shap_values_list, X, sex="Female")
     # shap_values = pl.concat([male_shap_values, female_shap_values])
 
-    # grouped_shap_plot(shap_values=shap_values, column_mapping=column_mapping)
     # sex_shap_plot(df=shap_values, column_mapping=column_mapping)
 
     # names = [data["name"] for data in config.features.model_dump().values()]

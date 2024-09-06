@@ -1,13 +1,15 @@
 from functools import partial
+from lightning import LightningDataModule
 from sklearn.linear_model import LinearRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import resample
 import polars as pl
+import torch
 from tqdm import tqdm
 from captum.attr import GradientShap
 
-from abcd.config import Config
+from abcd.config import Config, get_config
 
 
 def predict(x, model):
@@ -22,9 +24,8 @@ def make_shap_values(model, X, background, columns):
     return pl.DataFrame(shap_values.flatten(0, 1).cpu().numpy(), schema=columns)
 
 
-def regress_shap_values(shap_values, X):
+def regress_shap_values(shap_values, X, n_bootstraps: int):
     coefs = {name: [] for name in X.columns}
-    n_bootstraps = 100
     for _ in tqdm(range(n_bootstraps)):
         X_resampled, shap_resampled = resample(X, shap_values)  # type: ignore
         for col in shap_values.columns:
@@ -39,26 +40,27 @@ def regress_shap_values(shap_values, X):
     return df
 
 
-def make_shap(config: Config, model, data_module, analysis: str):
+def make_shap(
+    config: Config,
+    model,
+    data_module: LightningDataModule,
+    analysis: str,
+    factor_model: str,
+):
+    config = get_config(analysis=analysis, factor_model=factor_model)
     test_dataloader = iter(data_module.test_dataloader())
-    X, _ = next(test_dataloader)
+    X = torch.cat([x for x, _ in test_dataloader])
     val_dataloader = iter(data_module.val_dataloader())
-    background, _ = next(val_dataloader)
+    background = torch.cat([x for x, _ in val_dataloader])
     feature_names = (
         pl.read_csv(config.filepaths.data.analytic.test)
-        .drop(["src_subject_id", "y_t", "y_{t+1}"])
+        .drop(["src_subject_id", "y_{t+1}"])
         .columns
     )
     shap_values = make_shap_values(model, X, background, columns=feature_names)
-    shap_values.write_csv(f"data/analyses/{analysis}/results/shap_values.csv")
-
-    # sex = features["demo_sex_v2_1"] > 0
-    # male_shap_values = shap_values.filter(sex).with_columns(pl.lit("Male").alias("Sex"))
-    # female_shap_values = shap_values.filter(~sex).with_columns(
-    #     pl.lit("Female").alias("Sex")
-    # )
-    # sex_coefs = pl.concat([male_shap_values, female_shap_values])
-    # sex_coefs.write_csv("data/results/sex_shap_coefs.csv")
     features = pl.DataFrame(X.flatten(0, 1).numpy(), schema=feature_names)
-    df = regress_shap_values(shap_values, X=features)
-    df.write_csv(f"data/analyses/{analysis}/results/shap_coefficients.csv")
+    df = regress_shap_values(shap_values, X=features, n_bootstraps=config.n_bootstraps)
+    path = f"data/analyses/{factor_model}/{analysis}/results/"
+    shap_values.write_csv(path + "shap_values.csv")
+    features.write_csv(path + "shap_features.csv")
+    df.write_csv(path + "shap_coefficients.csv")
