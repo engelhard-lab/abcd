@@ -232,20 +232,20 @@ def threshold_table():
 
 
 def make_tables(config: Config):
-    cross_tabulation()
-    demographic_counts()
+    # cross_tabulation()
+    # demographic_counts()
     aggregate_metrics(analyses=config.analyses, factor_models=config.factor_models)
-    df = pl.scan_parquet("data/results/metrics/metrics.parquet")
-    groups = ["Factor model", "Predictor set", "Metric", "Variable", "Group"]
-    make_metric_table(df=df, groups=groups)
-    metric_table = pl.scan_parquet("data/results/metrics/metric_summary.parquet")
-    metric_table.sink_csv("data/supplement/tables/supplemental_table_2.csv")
-    quartile_metrics = quartile_metric_table(df=metric_table)
-    quartile_metrics.collect().write_csv("data/tables/table_2.csv")
-    demographic_metrics = demographic_metric_table(df=metric_table)
-    demographic_metrics.collect().write_csv("data/tables/table_3.csv")
+    # df = pl.scan_parquet("data/results/metrics/metrics.parquet")
+    # groups = ["Factor model", "Predictor set", "Metric", "Variable", "Group"]
+    # make_metric_table(df=df, groups=groups)
+    # metric_table = pl.scan_parquet("data/results/metrics/metric_summary.parquet")
+    # metric_table.sink_csv("data/supplement/tables/supplemental_table_2.csv")
+    # quartile_metrics = quartile_metric_table(df=metric_table)
+    # quartile_metrics.collect().write_csv("data/tables/table_2.csv")
+    # demographic_metrics = demographic_metric_table(df=metric_table)
+    # demographic_metrics.collect().write_csv("data/tables/table_3.csv")
     threshold_table()
-    shap_table(analysis="questions_mri", factor_model="within_event")
+    # shap_table(analysis="questions_mri", factor_model="within_event")
 
 
 if __name__ == "__main__":

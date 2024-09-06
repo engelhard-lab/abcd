@@ -169,7 +169,7 @@ def quartile_curves():
                 {
                     "{1,2,3}": "High-risk conversion",
                     "{4}": "High-risk persistence",
-                    "{1,2,3,4}": "High-risk persistence or conversion",
+                    "{1,2,3,4}": "High-risk",
                 }  # TODO change this at the source
             )
             .cast(
@@ -177,7 +177,7 @@ def quartile_curves():
                     [
                         "High-risk conversion",
                         "High-risk persistence",
-                        "High-risk persistence or conversion",
+                        "High-risk",
                     ]
                 )
             ),
@@ -202,7 +202,7 @@ def quartile_curves():
         palette="deep",
         facet_kws={"sharex": False, "sharey": False},
     )
-    g.set_titles("{col_name}")
+    g.set_titles("{col_name} {row_name} curve")
     font_size = 24
     labels = ["a", "b", "c", "d", "e", "f"]
     grouped_df = df.partition_by(["Metric", "Group"], maintain_order=True)
