@@ -1,251 +1,316 @@
 import matplotlib.pyplot as plt
-import numpy as np
 import polars as pl
-import pandas as pd
 import seaborn as sns
-from torch import load as torch_load
+from toml import load
 
-# from shap import summary_plot
-from matplotlib.patches import Patch
 import textwrap
-
 from abcd.config import Config
 
 
-FORMAT = "png"
+FORMAT = "pdf"
 
 
-def predicted_vs_observed_plot():
-    df = pl.read_csv("data/results/predicted_vs_observed.csv")
-    print(df)
-    df = df.rename(
-        {
-            "eventname": "Year",
-            "race_ethnicity": "Race/Ethnicity",
-            "demo_sex_v2_1": "Sex",
-            "interview_age": "Age",
-        }
-    )
+def quartile_curves():
+    df = pl.read_parquet("data/results/metrics/curves.parquet")
     df = (
-        df.melt(
-            id_vars=["y_pred", "y_true"],
-            value_vars=["Year", "Race/Ethnicity", "Sex", "Age"],
+        df.filter(
+            pl.col("Quartile at t+1").eq(4)
+            & pl.col("Variable").eq("High-risk scenario")
+            & pl.col("Predictor set").is_in(["CBCL scales", "Questionnaires"])
+            & pl.col("Factor model").eq("Within-event")
+            & pl.col("y").ne(0)
         )
-        .rename({"value": "Group", "variable": "Variable"})
-        .with_columns(pl.col("Group").replace("9", " 9"))
-        .sort("Group")
-        .drop_nulls()
+        .drop("Factor model", "Variable")
+        .with_columns(
+            pl.col("Metric").cast(pl.Enum(["ROC", "PR"])),
+            pl.col("Group").cast(pl.Enum(["Conversion", "Persistence", "Agnostic"])),
+        )
+        .sort("Predictor set", "Metric", "Group", "y")
     )
-    min_val = df.select(pl.min_horizontal(["y_true", "y_pred"]).min()).item()
-    max_val = df.select(pl.max_horizontal(["y_true", "y_pred"]).max()).item()
-    df = df.to_pandas()
-    fig, axes = plt.subplots(2, 2, figsize=(10, 10), sharex=True, sharey=True)
-    groups = df.groupby("Variable")
-    palette = sns.color_palette("deep")
-    for j, (ax, (name, group)) in enumerate(zip(axes.flat, groups)):
-        labels = group["Group"].unique().tolist()
-        for i, hue_category in enumerate(labels):
-            hue_subset = group[group["Group"] == hue_category]
-            sns.barplot(x="Group", y="r2", data=hue_subset, color=palette[i], ax=ax)
-        handles = [Patch(facecolor=palette[i]) for i in range(len(labels))]
-        ax.legend(
-            handles=handles,
-            labels=labels,
-            title=name,
-            loc="upper left",
+    g = sns.relplot(
+        data=df.to_pandas(),
+        x="x",
+        y="y",
+        hue="Predictor set",
+        row="Metric",
+        col="Group",
+        kind="line",
+        errorbar=None,
+        palette="deep",
+        facet_kws={"sharex": False, "sharey": False},
+    )
+    g.set_titles("{col_name} {row_name} curve")
+    font_size = 24
+    labels = ["a", "b", "c", "d", "e", "f"]
+    grouped_df = df.partition_by(["Metric", "Group"], maintain_order=True)
+    for i, (ax, label, group) in enumerate(zip(g.axes.flat, labels, grouped_df)):
+        if i == 3:
+            ax.set_ylabel("Precision (positive predictive value)")
+        if i == 0:
+            ax.set_ylabel("True positive rate (sensitivity)")
+        if i <= 2:
+            ax.text(0.05, 0.95, label, fontsize=font_size)
+            ax.set_xlabel("False positive rate (Type I error)")
+            ax.plot([0, 1], [0, 1], linestyle="--", color="black")
+        else:
+            ax.text(0.95, 0.95, label, fontsize=font_size)
+            ax.set_xlabel("Recall (sensitivity)")
+            ax.axhline(
+                group.filter(pl.col("y").ne(0))["y"].min(),
+                linestyle="--",
+                color="black",
+            )
+        ax.set_ylim(0.0, 1.05)
+    plt.subplots_adjust(hspace=0.3)  # , wspace=0.4
+    plt.savefig(f"data/figures/figure_1.{FORMAT}", format=FORMAT)
+
+
+def cbcl_distributions(config: Config):
+    cbcl_scales = config.features.mh_p_cbcl.columns
+    cbcl_names = [
+        "Anxious/Depressed",
+        "Withdrawn/Depressed",
+        "Somatic Complaints",
+        "Social Problems",
+        "Thought Problems",
+        "Attention Problems",
+        "Rule-Breaking Behavior",
+        "Aggressive Behavior",
+    ]
+    name_mapping = dict(zip(cbcl_scales, cbcl_names))
+    df = (
+        pl.read_csv(
+            "data/analyses/within_event/symptoms/analytic/train.csv",
+            columns=["src_subject_id", "y_{t+1}"] + cbcl_scales,
         )
-        if j in (0, 2):
-            ax.set_ylabel("Predicted")
-        if j in (2, 3):
-            ax.set_xlabel("Observed")
-        if j in (1, 3):
-            ax.set_ylabel("")
-        if j in (0, 1):
-            ax.set_xlabel("")
-        ax.plot([min_val, max_val], [min_val, max_val], color="black", linestyle="--")
-    plt.tight_layout()
-    plt.savefig(f"data/plots/predicted_vs_observed.{FORMAT}", format=FORMAT)
+        .rename({"y_{t+1}": "p-factor quartile"})
+        .unpivot(index="p-factor quartile", on=cbcl_scales)
+        .rename({"variable": "CBCL scale", "value": "t-score"})
+        .with_columns(
+            pl.col("CBCL scale").replace(name_mapping),
+            pl.col("p-factor quartile").add(1).cast(pl.Int32),
+        )
+    )
+    sns.set_theme(font_scale=2.0)
+    g = sns.catplot(
+        data=df.to_pandas(),
+        x="p-factor quartile",
+        y="t-score",
+        col="CBCL scale",
+        kind="boxen",
+        col_wrap=4,
+        height=6,
+    )
+    g.set_titles("{col_name}")
+    plt.savefig(
+        f"data/supplement/figures/supplemental_figure_x.{FORMAT}",
+        format=FORMAT,
+        bbox_inches="tight",
+    )
 
 
-def shap_plot(metadata):
-    n_display = 20
-    plt.figure(figsize=(16, 10))
-    metadata = metadata.rename(
-        {"column": "variable", "dataset": "Dataset"}
-    ).with_columns((pl.col("Dataset") + " " + pl.col("respondent")).alias("Dataset"))
-    df = pl.read_csv("data/results/shap_coefs.csv")
-    df = df.join(other=metadata, on="variable", how="inner")
-    # print(pl.col("Dataset").eq(pl.lit("Adverse childhood experiences")))
-    f = pl.col("Dataset").eq(pl.lit("Adverse childhood experiences Parent"))
-    print(df.filter(f))
-    df = df.with_columns(  # FIXME move to variable.csv generation code
-        pl.when(pl.col("variable").eq(pl.lit("total_core")))
-        .then(pl.lit("Adverse childhood experiences"))
-        .when(pl.col("variable").eq(pl.lit("eventname")))
-        .then(pl.lit("Measurement year"))
-        .otherwise(pl.col("question"))
-        .alias("question")
+RISK_MAPPING = {1: "None", 2: "Low", 3: "Moderate", 4: "High"}
+
+
+def analysis_comparison():
+    df = pl.read_parquet("data/results/metrics/metrics.parquet")
+    df = df.filter(
+        pl.col("Variable").eq("High-risk scenario")
+        & pl.col("Metric").eq("AUROC")
+        & pl.col("Factor model").eq("Within-event")
     ).with_columns(
-        pl.when(pl.col("variable").eq(pl.lit("eventname")))
-        .then(pl.lit("Spatiotemporal"))
-        .otherwise(pl.col("Dataset"))
-        .alias("Dataset")
+        pl.col("Quartile at t+1").replace_strict(RISK_MAPPING),
+        pl.col("Group").cast(pl.Enum(["Conversion", "Persistence", "Agnostic"])),
     )
-    print(df)
-    top_questions = (
+    g = sns.catplot(
+        data=df.to_pandas(),
+        x="Quartile at t+1",
+        y="value",
+        kind="bar",
+        hue="Predictor set",
+        col="Group",
+        errorbar="pi",
+    )
+    g.set_titles("{col_name}")
+    g.set(ylim=(0.5, 1.0))
+    g.set_axis_labels("Risk", "AUROC")
+    plt.savefig(
+        f"data/supplement/figures/supplemental_figure_1.{FORMAT}",
+        format=FORMAT,
+        bbox_inches="tight",
+    )
+
+
+def p_factor_model_comparison():
+    df = pl.read_parquet("data/results/metrics/metrics.parquet")
+    df = df.filter(
+        pl.col("Predictor set").is_in(["Questionnaires", "CBCL scales"])
+        & pl.col("Group").eq("Conversion")
+        & pl.col("Metric").eq("AUROC")
+    ).with_columns(pl.col("Quartile at t+1").replace_strict(RISK_MAPPING))
+    g = sns.catplot(
+        data=df.to_pandas(),
+        x="Quartile at t+1",
+        y="value",
+        kind="bar",
+        hue="Factor model",
+        col="Predictor set",
+        errorbar="pi",
+    )
+    g.set(ylim=(0.5, 1.0))
+    g.set_axis_labels("Risk group", "AUROC")
+    for ax in g.axes.flat:
+        ax.axhline(0.5, color="black", linestyle="--")
+    plt.savefig(
+        f"data/supplement/figures/supplemental_figure_2.{FORMAT}",
+        format=FORMAT,
+        bbox_inches="tight",
+    )
+
+
+def shap_plot(
+    filepath: str,
+    analysis: str,
+    factor_model: str,
+    textwrap_width: int,
+    y_axis_label: str,
+    figsize: tuple[int, int],
+):
+    plt.figure(figsize=figsize)
+    n_display = 20
+    cbcl_names = {
+        "Attention": "Attention Problems",
+        "Somatic": "Somatic Complaints",
+        "Aggressive": "Aggressive Behavior",
+        "Rulebreak": "Rule-Breaking Behavior",
+        "Thought": "Thought Problems",
+        "Withdep": "Withdrawn/Depressed",
+        "Social": "Social Problems",
+        "Anxdep": "Anxious/Depressed",
+    }
+    cbcl_names = {
+        k + " cbcl syndrome scale (t-score)": v for k, v in cbcl_names.items()
+    }
+    sns.set_theme(style="darkgrid", palette="deep", font_scale=1.6)
+    df = pl.read_csv(
+        f"data/analyses/{factor_model}/{analysis}/results/shap_values.csv"
+    ).with_columns(
+        (pl.col("Respondent") + ": " + pl.col("dataset")).alias("Dataset"),
+        pl.col("question").replace(cbcl_names),
+    )
+    n_bootstraps = 100
+    dfs = []
+    for _ in range(n_bootstraps):
+        resampled = (
+            df.sample(fraction=1.0, with_replacement=True)
+            .group_by("Respondent", "question")
+            .agg(pl.col("Dataset").first(), pl.col("shap_value").sum())
+        )
+        dfs.append(resampled)
+    df = pl.concat(dfs)
+    order = (
         df.group_by("question")
-        .agg(pl.col("value").abs().mean())
-        .sort(by="value")
-        .tail(n_display)["question"]
-        .reverse()
+        .agg(pl.col("shap_value").sum().abs())
+        .sort(by="shap_value", descending=True)
+        .head(n_display)["question"]
         .to_list()
     )
-    print(top_questions)
-    df = (
-        df.filter(pl.col("question").is_in(top_questions))
-        .select(["question", "value", "Dataset"])
-        .to_pandas()
-    )
+    df = df.filter(pl.col("question").is_in(order))
     g = sns.pointplot(
-        data=df,
-        x="value",
+        data=df.to_pandas(),
+        x="shap_value",
         y="question",
         hue="Dataset",
-        errorbar=("sd", 2),
+        errorbar="ci",
         linestyles="none",
-        order=top_questions,
+        order=order,
     )
+    # sns.move_legend(g, "upper left", bbox_to_anchor=(1, 1))
     g.set(
-        xlabel="SHAP value coefficient (impact of feature on model output)",
-        ylabel="Feature description",
+        xlabel="SHAP value",
+        ylabel=y_axis_label,
     )
-    handles, labels = g.get_legend_handles_labels()
-    sorted_labels, sorted_handles = zip(
-        *sorted(zip(labels, handles), key=lambda t: t[0])
-    )
-    g.legend(sorted_handles, sorted_labels, loc="lower left", title="Dataset")
-    g.autoscale(enable=True)
+    # g.autoscale(enable=True)
     g.set_yticks(g.get_yticks())
-    labels = [textwrap.fill(label.get_text(), 75) for label in g.get_yticklabels()]
+    labels = [
+        textwrap.fill(label.get_text(), textwrap_width) for label in g.get_yticklabels()
+    ]
     g.set_yticklabels(labels)
     g.yaxis.grid(True)
-    # ax2 = g.twinx() # TODO add response
-    # ax2.set_yticks(g.get_yticks())
-    # right_labels = [label for label in g.get_yticklabels()]
-    # ax2.set_yticklabels(right_labels)
-    # ax2.set_ylabel("Response")
+
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
-    plt.savefig(f"data/plots/shap_coefs.{FORMAT}", format=FORMAT)
+    plt.savefig(f"{filepath}.{FORMAT}", format=FORMAT)
 
 
-def grouped_shap_plot(shap_values, X, column_mapping):
-    plt.figure(figsize=(10, 8))
-    df = pl.DataFrame(pd.DataFrame(shap_values, columns=X.columns))
-    df = df.transpose(include_header=True, header_name="variable")
-    df = (
-        df.with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
-        .group_by("dataset")
-        .sum()
-        .drop("variable")
-    )
-    columns = df.drop_in_place("dataset")
-    # X = (  # FIXME this is kinda funky; refactor
-    #     pl.DataFrame(X)
-    #     .transpose(include_header=True, header_name="variable")
-    #     .with_columns(pl.col("variable").replace(column_mapping).alias("dataset"))
-    #     .group_by("dataset")
-    #     .sum()
-    #     .drop("variable")
-    #     .transpose(column_names=columns)[1:]
-    #     .to_pandas()
-    #     .astype(float)
-    # )
-    df = df.transpose(column_names=columns).melt().with_columns(pl.col("value").abs())
-    mean_values = (
-        df.group_by("variable")
-        .mean()
-        .sort("value", descending=True)["variable"]
+def grouped_shap_plot(filepath: str, analysis: str, factor_model: str):
+    plt.figure(figsize=(16, 8))
+    df = pl.read_csv(f"data/analyses/{factor_model}/{analysis}/results/shap_values.csv")
+    n_bootstraps = 1000
+    dfs = []
+    for _ in range(n_bootstraps):
+        resampled = (
+            df.sample(fraction=1.0, with_replacement=True)
+            .group_by("dataset", "Respondent")
+            .agg(pl.col("shap_value").sum())
+        )
+        dfs.append(resampled)
+    df = pl.concat(dfs)
+    order = (
+        df.group_by("dataset", "Respondent")
+        .agg(pl.col("shap_value").sum().abs())
+        .sort("shap_value", descending=True)["dataset"]
         .to_list()
     )
     g = sns.pointplot(
         data=df.to_pandas(),
-        x="value",
-        y="variable",
+        x="shap_value",
+        y="dataset",
+        hue="Respondent",
         linestyles="none",
-        order=mean_values,
+        order=order,
+        errorbar="pi",
     )
-    g.set(ylabel="Feature group", xlabel="Absolute summed SHAP values")
+    sns.move_legend(g, "lower right")
+    g.set(ylabel="Predictor category", xlabel="Summed SHAP value")
     g.yaxis.grid(True)
     plt.axvline(x=0, color="black", linestyle="--")
     plt.tight_layout()
-    plt.savefig(f"data/plots/shap_grouped.{FORMAT}", format=FORMAT)
+    plt.savefig(f"{filepath}.{FORMAT}", format=FORMAT)
 
 
-def shap_clustermap(shap_values, feature_names, column_mapping, color_mapping):
-    plt.figure()
-    sns.set_theme(style="white", palette="deep")
+def plot(config):
+    sns.set_theme(style="darkgrid", palette="deep", font_scale=2.0)
     sns.set_context("paper", font_scale=2.0)
-    column_colors = {}
-    color_mapping["ACEs"] = sns.color_palette("tab20")[-1]
-    color_mapping["Spatiotemporal"] = sns.color_palette("tab20")[-2]
-    for col, dataset in column_mapping.items():
-        column_colors[col] = color_mapping[dataset]
-    colors = [column_colors[col] for col in feature_names[1:] if col in column_colors]
-    shap_df = pl.DataFrame(shap_values[:, 1:], schema=feature_names[1:]).to_pandas()
-    shap_corr = shap_df.corr()
-    g = sns.clustermap(
-        shap_corr,
-        row_colors=colors,
-        yticklabels=False,
-        xticklabels=False,
-    )
-    g.ax_col_dendrogram.set_visible(False)
-    mask = np.triu(np.ones_like(shap_corr))
-    values = g.ax_heatmap.collections[0].get_array().reshape(shap_corr.shape)  # type: ignore
-    new_values = np.ma.array(values, mask=mask)
-    g.ax_heatmap.collections[0].set_array(new_values)
-    handles = [Patch(facecolor=color) for color in color_mapping.values()]
-    plt.legend(
-        handles,
-        color_mapping.keys(),
-        title="Dataset",
-        bbox_to_anchor=(1, 1),
-        bbox_transform=plt.gcf().transFigure,
-        loc="upper right",
-    )
-    plt.tight_layout()
-    plt.savefig(f"data/plots/shap_clustermap.{FORMAT}", format=FORMAT)
 
-
-def plot(config: Config, dataloader):
-    sns.set_theme(style="darkgrid", palette="deep")
-    sns.set_context("paper", font_scale=1.5)
-    # predicted_vs_observed_plot()
-    names = [data["name"] for data in config.features.model_dump().values()]
-    feature_names = (
-        pl.read_csv("data/analytic/test.csv", n_rows=1)
-        .drop(["src_subject_id", "p_factor"])
-        .columns
-    )
-    test_dataloader = iter(dataloader)
-    X, _ = next(test_dataloader)
-    X = pd.DataFrame(X.view(-1, X.shape[2]), columns=feature_names)
-    shap_values_list = torch_load("data/results/shap_values.pt")
-    shap_values = np.mean(shap_values_list, axis=-1)
-    shap_values = shap_values.reshape(-1, shap_values.shape[2])
-    metadata = pl.read_csv("data/variables.csv")
-    shap_plot(metadata=metadata)
-    column_mapping = dict(zip(metadata["column"], metadata["dataset"]))
+    quartile_curves()
     grouped_shap_plot(
-        shap_values=shap_values,
-        X=X,
-        column_mapping=column_mapping,
+        filepath="data/figures/figure_2",
+        analysis="questions",
+        factor_model="within_event",
     )
-    color_mapping = dict(zip(names, sns.color_palette("tab20")))
-    shap_clustermap(
-        shap_values=shap_values,
-        feature_names=feature_names,
-        column_mapping=column_mapping,
-        color_mapping=color_mapping,
+
+    analysis_comparison()
+    p_factor_model_comparison()
+    shap_plot(
+        filepath="data/supplement/figures/supplemental_figure_3",
+        analysis="questions",
+        factor_model="within_event",
+        textwrap_width=75,
+        y_axis_label="Question",
+        figsize=(24, 16),
     )
+    shap_plot(
+        filepath="data/supplement/figures/supplemental_figure_4",
+        analysis="symptoms",
+        factor_model="within_event",
+        textwrap_width=75,
+        y_axis_label="CBCL syndrome scale (t-score)",
+        figsize=(16, 8),
+    )
+    cbcl_distributions(config=config)
+
+
+if __name__ == "__main__":
+    config = Config(**load("config.toml"))
+    plot(config)

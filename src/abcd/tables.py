@@ -1,187 +1,243 @@
-from sklearn.metrics import r2_score
+from itertools import product
 import polars as pl
+from tqdm import tqdm
 
-RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
-SEX_MAPPING = {1: "Male", 0: "Female"}
-EVENT_MAPPING_1 = {
-    "baseline_year_1_arm_1": "0",
-    "1_year_follow_up_y_arm_1": "1",
-    "2_year_follow_up_y_arm_1": "2",
-    "3_year_follow_up_y_arm_1": "3",
-    "4_year_follow_up_y_arm_1": "4",
-}
-EVENT_MAPPING_2 = {0: "0", 1: "1", 2: "2", 3: "3", 4: "4"}
-COLUMNS = [
-    ("eventname", "Year"),
-    ("demo_sex_v2_1", "Sex"),
-    ("race_ethnicity", "Race/Ethnicity"),
-    ("interview_age", "Age"),
-]
+from abcd.config import Config, get_config
+
+group_order = pl.Enum(
+    [
+        "1",
+        "2",
+        "3",
+        "4",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "2016",
+        "2017",
+        "2018",
+        "2019",
+        "2020",
+        "2021",
+        "Baseline",
+        "1-year",
+        "2-year",
+        "3-year",
+        "Asian",
+        "Black",
+        "Hispanic",
+        "White",
+        "Other",
+        "Female",
+        "Male",
+    ]
+)
 
 
-def make_follow_up_table():
-    df = pl.read_csv("data/analytic/dataset.csv").with_columns(
-        pl.col("eventname").replace(EVENT_MAPPING_2)
+def cross_tabulation():
+    df = pl.read_csv("data/raw/metadata.csv")
+    risk_groups = {
+        "1": "No risk",
+        "2": "Low risk",
+        "3": "Moderate risk",
+        "4": "High risk",
+    }
+    variables = ["Sex", "Age", "Race", "Follow-up event", "Event year", "ADI quartile"]
+    columns = ["Variable", "Group", "No risk", "Low risk", "Moderate risk", "High risk"]
+    df = (
+        df.select(["Quartile at t+1"] + variables)
+        .with_columns(pl.col("Quartile at t+1").replace_strict(risk_groups))
+        .unpivot(index="Quartile at t+1", on=variables)
+        .group_by("Quartile at t+1", "variable", "value")
+        .len()
+        .pivot(index=["variable", "value"], on="Quartile at t+1", values="len")
+        .rename({"variable": "Variable", "value": "Group"})
+        .select(columns)
+        .sort(
+            "Variable",
+            pl.col("Group").cast(
+                pl.Enum(["Baseline", "1-year", "2-year", "3-year"]), strict=False
+            ),
+        )
+        .with_columns(pl.sum_horizontal(pl.exclude("Variable", "Group")).alias("Total"))
     )
-    labels = pl.read_csv("data/labels/factor_scores.csv").with_columns(
-        pl.col("eventname").replace(EVENT_MAPPING_1)
-    )
-    features = pl.read_csv("data/analytic/features.csv").with_columns(
-        pl.col("eventname").replace(EVENT_MAPPING_1)
+    col_sum = pl.exclude("Variable", "Group").sum().over("Variable")
+    percent = (
+        pl.exclude("Variable", "Group")
+        .truediv(col_sum)
+        .mul(100)
+        .round(0)
+        .cast(pl.Int32)
+        .cast(pl.String)
     )
     df = (
-        df.group_by("eventname")
-        .len()
-        .sort("eventname")
-        .with_columns(pl.col("eventname").cast(pl.Utf8))
-        .with_columns(pl.lit("Joined").alias("Dataset"))
-    )
-    labels = (
-        labels.group_by("eventname")
-        .len()
-        .sort("eventname")
-        .with_columns(pl.lit("p-factor").alias("Dataset"))
-    )
-    features = (
-        features.group_by("eventname")
-        .len()
-        .sort("eventname")
-        .with_columns(pl.lit("Predictors").alias("Dataset"))
-    )
-    df = (
-        pl.concat([df, labels, features])
-        .pivot(values="len", columns="Dataset", index="eventname")
-        .rename({"eventname": "Year"})
-    )
-    df.select("Year", "p-factor", "Predictors", "Joined").drop_nulls().write_csv(
-        "data/results/tables/follow_up.csv"
-    )
-
-
-def make_analysis_demographics():
-    df = (
-        pl.read_csv(
-            "data/analytic/dataset.csv",
-            columns=[
-                "src_subject_id",
-                "eventname",
-                "p_factor",
-                "demo_sex_v2_1",
-                "interview_age",
-            ],
-        )
-        .with_columns(pl.all().forward_fill().over("src_subject_id"))
-        .with_columns(
-            pl.col("eventname").replace(EVENT_MAPPING_2),
-            pl.col("demo_sex_v2_1").replace(SEX_MAPPING),
-            (pl.col("interview_age") / 12).round(0).cast(pl.Int32),
-        )
-    )
-    race = pl.read_csv(
-        "data/features/abcd_p_demo.csv",
-        columns=["src_subject_id", "eventname", "race_ethnicity"],
-    ).with_columns(
-        pl.col("race_ethnicity").replace(RACE_MAPPING),
-        pl.col("eventname").replace(EVENT_MAPPING_1),
-    )
-    df = df.join(race, on=["src_subject_id", "eventname"], how="inner")
-    print(df)
-    df.write_csv("data/demographics.csv")
-
-
-def make_p_factor_group(df: pl.DataFrame, group_name: str, variable_name: str):
-    return (
-        df.group_by(group_name)
-        .agg(
-            (
-                pl.col("p_factor").mean().round(3).cast(pl.Utf8)
-                + " ± "
-                + pl.col("p_factor").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("p-factor"),
-            pl.col("src_subject_id").n_unique().alias("Count"),
-        )
-        .sort(group_name)
-        .rename({group_name: "Group"})
-        .with_columns(
-            pl.lit(variable_name).alias("Variable"), pl.col("Group").cast(pl.Utf8)
-        )
-    )
-
-
-def p_factor_table():
-    df = pl.read_csv("data/demographics.csv")
-    dfs = [make_p_factor_group(df, column, name) for column, name in COLUMNS]
-    total = (
         df.with_columns(
-            pl.lit("All").alias("Group"),
-            (
-                pl.col("p_factor").mean().round(3).cast(pl.Utf8)
-                + " ± "
-                + pl.col("p_factor").std().mul(2).round(2).cast(pl.Utf8)
-            ).alias("p-factor"),
-            pl.col("src_subject_id").n_unique().alias("Count"),
-            pl.lit("All").alias("Variable"),
+            pl.exclude("Variable", "Group").cast(pl.String) + " (" + percent + "%)"
         )
-        .select("Group", "p-factor", "Count", "Variable")
-        .head(1)
-    )
-    df = (
-        pl.concat([total] + dfs)
-        .select("Variable", "Group", "p-factor", "Count")
         .drop_nulls()
+        .sort("Variable", pl.col("Group").cast(group_order, strict=False))
     )
-    df.write_csv("data/results/tables/p_factors.csv")
+    df.write_csv("data/tables/table_1.csv")
 
 
-def apply_r2(args) -> pl.Series:
-    return pl.Series([r2_score(y_true=args[0], y_pred=args[1])], dtype=pl.Float32)
-
-
-def make_r2_group(df: pl.DataFrame, group_name: str, variable_name: str):
-    return (
-        df.group_by(group_name)
-        .agg(
-            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("R2"),
-            pl.col("src_subject_id").n_unique().alias("Subjects"),
-        )
-        .rename({group_name: "Group"})
-        .sort("Group")
-        .with_columns(
-            pl.lit(variable_name).alias("Variable"), pl.col("Group").cast(pl.Utf8)
-        )
-        .select("Variable", "Group", "R2", "Subjects")
-    )
-
-
-def r2_table():
-    df = pl.read_csv("data/results/predicted_vs_observed.csv")
-    dfs = [make_r2_group(df, column, name) for column, name in COLUMNS]
-    total = (
-        df.with_columns(
-            pl.lit("All").alias("Variable"),
-            pl.lit("All").alias("Group"),
-            pl.map_groups(exprs=["y_true", "y_pred"], function=apply_r2).alias("R2"),
-            pl.col("src_subject_id").n_unique().alias("Subjects"),
-        )
-        .select("Variable", "Group", "R2", "Subjects")
-        .head(1)
-    )
+def demographic_counts():
+    columns = ["Subject ID", "Sex", "Race", "ADI quartile"]
+    df = pl.read_csv("data/raw/metadata.csv").select(columns).unique(columns)
+    n = df["Subject ID"].n_unique()
     df = (
-        pl.concat([total] + dfs)
-        .with_columns(pl.col("R2").round(2))
-        .filter(pl.col("R2") > 0)
+        df.melt(id_vars="Subject ID")
+        .group_by("variable")
+        .agg(pl.col("value").value_counts())
+        .explode("value")
+        .unnest("value")
+        .with_columns(
+            pl.col("count")
+            .truediv(n)
+            .mul(100)
+            .round(1)
+            .cast(pl.String)
+            .add("%")
+            .alias("percentage")
+        )
+        .sort("variable", "value")
+        .write_csv("data/supplement/tables/supplemental_table_1.csv")
     )
-    df.write_csv("data/results/tables/r2_by_event.csv")
 
 
-def make_tables():
-    make_follow_up_table()
-    p_factor_table()
-    r2_table()
+def shap_table(analysis: str, factor_model: str):
+    columns = [
+        "dataset",
+        "table",
+        "respondent",
+        "question",
+        "response",
+    ]
+    df = pl.read_csv(
+        f"data/analyses/{factor_model}/{analysis}/results/shap_values.csv"
+    ).rename({"Respondent": "respondent"})
+    df = (
+        df.group_by("variable")
+        .agg(
+            pl.col(columns).first(),
+            pl.col("shap_value").sum().alias("shap_value"),
+        )
+        .sort(pl.col("shap_value").abs(), descending=True)
+    ).select(["variable"] + columns + ["shap_value"])
+    df.write_csv("data/supplement/tables/supplemental_table_4.csv")
+
+
+def aggregate_metrics(analyses: list[str], factor_models: list[str]):
+    for metric_type in ("sensitivity_specificity", "curves", "metrics"):
+        metrics = []
+        progress_bar = tqdm(
+            product(analyses, factor_models), total=len(analyses) * len(factor_models)
+        )
+        for analysis, factor_model in progress_bar:
+            path = f"data/analyses/{factor_model}/{analysis}/results/metrics/{metric_type}.csv"
+            metric = pl.scan_csv(path).with_columns(
+                pl.lit(factor_model).alias("Factor model"),
+                pl.lit(analysis).alias("Predictor set"),
+            )
+            metrics.append(metric)
+        pl.concat(metrics).with_columns(
+            pl.col("Predictor set").replace(
+                {
+                    "questions": "Questionnaires",
+                    "symptoms": "CBCL scales",
+                    "questions_symptoms": "Questionnaires, CBCL scales",
+                    "questions_mri": "Questionnaires, MRI",
+                    "questions_mri_symptoms": "Questionnaires, MRI, CBCL scales",
+                    "autoregressive": "Previous p-factors",
+                }
+            ),
+            pl.col("Factor model").replace(
+                {"within_event": "Within-event", "across_event": "Across-event"}
+            ),
+        ).sink_parquet(f"data/results/metrics/{metric_type}.parquet")
+
+
+def make_metric_table(df: pl.LazyFrame, groups: list[str]):
+    group_order = [
+        pl.col("Group").cast(pl.Int32, strict=False) if group == "Group" else group
+        for group in groups
+    ]
+    return (
+        df.group_by(groups + ["Quartile at t+1"], maintain_order=True)
+        .agg(
+            pl.col("Prevalence").first(),
+            pl.col("value").mean().round(2).cast(pl.String)
+            + " ± "
+            + pl.col("value").std(2).round(2).cast(pl.String),
+        )
+        .with_columns(pl.col("Prevalence").round(2))
+        .with_columns(
+            pl.when(pl.col("Metric").eq("AP"))
+            .then(
+                pl.col("value").add(" (" + pl.col("Prevalence").cast(pl.String)) + ")"
+            )
+            .otherwise(pl.col("value"))
+        )
+        .sort("Quartile at t+1")
+        .collect()
+        .pivot(on="Quartile at t+1", values="value", index=groups)
+        .rename(
+            {"1": "No risk", "2": "Low risk", "3": "Moderate risk", "4": "High risk"}
+        )
+        .with_columns(pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])))
+        .sort(group_order)
+        .lazy()
+        .sink_parquet("data/results/metrics/metric_summary.parquet")
+    )
+
+
+def quartile_metric_table(df: pl.LazyFrame):
+    return (
+        df.filter(
+            pl.col("Variable").eq("High-risk scenario")
+            & pl.col("Predictor set").is_in(["Questionnaires", "CBCL scales"])
+            & pl.col("Factor model").eq("Within-event")
+        )
+        .with_columns(
+            pl.col("Group").cast(pl.Enum(["Conversion", "Persistence", "Agnostic"])),
+            pl.col("Predictor set").cast(pl.Enum(["Questionnaires", "CBCL scales"])),
+        )
+        .drop("Factor model", "Variable")
+        .sort("Predictor set", "Metric", "Group")
+        .rename({"Group": "High-risk scenario"})
+    )
+
+
+def demographic_metric_table(df: pl.LazyFrame):
+    return (
+        df.filter(
+            pl.col("Variable").ne("High-risk scenario")
+            & pl.col("Predictor set").eq("Questionnaires")
+            & pl.col("Factor model").eq("Within-event")
+        )
+        .drop("Factor model", "Predictor set")
+        .sort("Metric", "Variable", pl.col("Group").cast(group_order))
+    )
+
+
+def make_tables(config: Config):
+    cross_tabulation()
+    demographic_counts()
+    aggregate_metrics(analyses=config.analyses, factor_models=config.factor_models)
+    df = pl.scan_parquet("data/results/metrics/metrics.parquet")
+    groups = ["Factor model", "Predictor set", "Metric", "Variable", "Group"]
+    make_metric_table(df=df, groups=groups)
+    metric_table = pl.scan_parquet("data/results/metrics/metric_summary.parquet")
+    metric_table.sink_csv("data/supplement/tables/supplemental_table_2.csv")
+    quartile_metrics = quartile_metric_table(df=metric_table)
+    quartile_metrics.collect().write_csv("data/tables/table_2.csv")
+    demographic_metrics = demographic_metric_table(df=metric_table)
+    demographic_metrics.collect().write_csv("data/tables/table_3.csv")
+    shap_table(analysis="questions", factor_model="within_event")
 
 
 if __name__ == "__main__":
-    make_analysis_demographics()
-    make_follow_up_table()
-    p_factor_table()
-    r2_table()
+    config = get_config()
+    make_tables(config)

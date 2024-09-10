@@ -1,32 +1,56 @@
 fast_dev_run = false
 random_seed = 42
 regenerate = true
-tune = false
-refit = false
-evaluate = false
+tune = true
+log = false
+predict = true
+evaluate = true
+shap = true
 plot = true
-tables = false
+tables = true
 verbose = false
-train_size = 0.8
-n_trials = 64
-method = "rnn"
+n_trials = 32
+n_bootstraps = 1000
 join_on = ["src_subject_id", "eventname"]
-target = "p_factor"                       # choose from: "p_factor" or "cbcl"
+factor_models = ["within_event", "across_event"]
+analyses = [
+    "questions",
+    "questions_mri",
+    "questions_symptoms",
+    "symptoms",
+    "questions_mri_symptoms",
+    "autoregressive",
+]
+device = "mps"
 
 [filepaths]
-data = "data/"
-features = "features/"
-labels = "labels/p_factors.csv"
-cbcl_labels = "labels/cbcl.csv"
-checkpoints = "checkpoints"
-logs = "lightning_logs"
+tables = "data/tables/"
+plots = "data/plots/"
+[filepaths.data]
+[filepaths.data.raw]
+dataset = "data/raw/dataset.csv"
+metadata = "data/raw/metadata.csv"
+features = "data/raw/features/"
+splits = "data/raw/splits/"
+[filepaths.data.analytic]
 train = "analytic/train.csv"
 val = "analytic/val.csv"
 test = "analytic/test.csv"
+[filepaths.data.results]
+metrics = "results/metrics/"
+checkpoints = "results/checkpoints/"
+study = "results/study.pkl"
+logs = "results/lightning_logs"
+predictions = "results/predictions.parquet"
+
+[preprocess]
+n_neighbors = 5
+n_quantiles = 4
+train_size = 0.8
 
 [training]
-batch_size = 1024
-max_epochs = 100
+batch_size = 2048
+max_epochs = 200
 gradient_clip = 1.0
 
 [optimizer]
@@ -34,7 +58,7 @@ momentum = 0.99
 nesterov = true
 [optimizer.lr]
 low = 1e-4
-high = 1e-2
+high = 1e-1
 log = true
 [optimizer.weight_decay]
 low = 1e-8
@@ -42,10 +66,10 @@ high = 1e-2
 log = true
 
 [model]
-hidden_dim = [16, 32, 64, 128]
+hidden_dim = [64, 128, 256, 512]
 [model.dropout]
 low = 0.0
-high = 0.5
+high = 0.75
 [model.num_layers]
 low = 1
 high = 5
@@ -54,9 +78,11 @@ high = 5
 checkpoint_every_n_steps = 1
 log_every_n_steps = 1
 
-[labels]
-p_factor = "p_factor"
-cbcl_labels = [
+[features]
+[features.mh_p_cbcl]
+name = "Child Behavior Checklist (CBCL)"
+respondent = "Parent"
+columns = [
     "cbcl_scr_syn_anxdep_t",
     "cbcl_scr_syn_withdep_t",
     "cbcl_scr_syn_somatic_t",
@@ -66,19 +92,18 @@ cbcl_labels = [
     "cbcl_scr_syn_rulebreak_t",
     "cbcl_scr_syn_aggressive_t",
 ]
-
-[features]
 [features.abcd_p_demo]
 name = "Demographics"
 respondent = "Parent"
 columns = [
     "demo_sex_v2",
+    "race_ethnicity",
     "demo_comb_income_v2",
     "demo_prnt_ed_v2",
     "demo_prtnr_ed_v2",
 ]
 [features.led_l_adi]
-name = "Demographics"
+name = "Area deprivation"
 respondent = "Parent"
 columns = [
     "reshist_addr1_adi_perc",
@@ -88,10 +113,10 @@ columns = [
 [features.abcd_y_lt]
 name = "Demographics"
 respondent = "Parent"
-columns = ["interview_age", "site_id_l"]
+columns = ["interview_age", "interview_date"] # , "site_id_l"
 [features.abcd_aces]
-name = "Adverse childhood experiences"
-respondent = "Parent"                  # TODO check if this is from parent, youth, or both
+name = "Adverse childhood experiences (ACEs)"
+respondent = "Parent"                         # TODO check if this is from parent, youth, or both
 columns = ["total_core"]
 [features.ce_p_fes]
 name = "Family environment"
@@ -102,27 +127,27 @@ name = "Family environment"
 respondent = "Youth"
 columns = []
 [features.ce_p_nsc]
-name = "Neighborhood"
+name = "Neighborhood safety"
 respondent = "Parent"
 columns = []
 [features.ce_y_nsc]
-name = "Neighborhood"
+name = "Neighborhood safety"
 respondent = "Youth"
 columns = []
 [features.ce_y_pm]
-name = "Problem monitor"
+name = "Problem monitoring"
 respondent = "Youth"
 columns = []
 [features.ce_p_psb]
-name = "Prosocial"
+name = "Prosocial behaviors"
 respondent = "Parent"
 columns = []
 [features.ce_y_psb]
-name = "Prosocial"
+name = "Prosocial behaviors"
 respondent = "Youth"
 columns = []
 [features.ce_y_srpf]
-name = "School"
+name = "School risk and protective factors"
 respondent = "Youth"
 columns = []
 [features.nt_p_stq]
@@ -134,15 +159,28 @@ name = "Screentime"
 respondent = "Youth"
 columns = []
 [features.ph_p_sds]
-name = "Sleep disturbance"
+name = "Sleep disturbances"
 respondent = "Parent"
 columns = []
 [features.su_p_pr]
 name = "Parental rules"
 respondent = "Parent"
 columns = []
+[features.mh_p_fhx]
+name = "Family mental health history"
+respondent = "Parent"
+columns = [
+    "famhx_4_p",
+    "fam_history_5_yes_no",
+    "fam_history_6_yes_no",
+    "fam_history_7_yes_no",
+    "fam_history_8_yes_no",
+    "fam_history_9_yes_no",
+    "fam_history_10_yes_no",
+    "fam_history_11_yes_no",
+]
 [features.mri_y_dti_fa_fs_at]
-name = "DTIFA"
+name = "Diffusion tensor imaging"
 respondent = "Youth"
 columns = [
     "dmdtifp1_10",
@@ -168,7 +206,7 @@ columns = [
     "dmdtifp1_20",
 ]
 [features.mri_y_rsfmr_cor_gp_gp]
-name = "RSFMRI"
+name = "Resting functional MRI"
 respondent = "Youth"
 columns = [
     "rsfmri_c_ngd_cgc_ngd_dt",
@@ -179,14 +217,14 @@ columns = [
     "rsfmri_c_ngd_cgc_ngd_cgc",
 ]
 [features.mri_y_tfmr_sst_csvcg_dsk]
-name = "FMRI task"
+name = "Task-based functional MRI"
 respondent = "Youth"
 columns = ["tfmri_sacsvcg_bcdk_bktslh", "tfmri_sacsvcg_bcdk_bktsrh"]
 [features.mri_y_tfmr_mid_alrvn_dsk]
-name = "FMRI task"
+name = "Task-based functional MRI"
 respondent = "Youth"
 columns = ["tfmri_ma_alrvn_b_cds_bkslh", "tfmri_ma_alrvn_b_cds_bksrh"]
 [features.mri_y_tfmr_nback_2b_dsk]
-name = "FMRI task"
+name = "Task-based functional MRI"
 respondent = "Youth"
 columns = ["tfmri_nback_all_339", "tfmri_nback_all_373"]

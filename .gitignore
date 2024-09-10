@@ -132,6 +132,7 @@ dmypy.json
 
 log.ipynb
 data/
+results/
+data_copy/
 .vscode
-general_sentence_transformer.pt
-xgb.ipynb
+notebooks/

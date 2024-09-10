@@ -1,84 +1,76 @@
 from multiprocessing import cpu_count
-from tomllib import load
-import pickle
+
 from lightning import seed_everything
 from sklearn import set_config
+import polars as pl
+from tqdm import tqdm
+from itertools import product
 
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
-from abcd.preprocess import get_data
-from abcd.config import Config
-from abcd.model import Network, make_trainer
+from abcd.importance import make_shap
+from abcd.metadata import make_metadata
+from abcd.preprocess import get_dataset
+from abcd.config import get_config
+from abcd.model import make_model
 from abcd.plots import plot
 from abcd.tables import make_tables
 from abcd.tune import tune
-from abcd.utils import cleanup_checkpoints, get_best_checkpoint
 
 
 def main():
-    set_config(transform_output="pandas")
-    with open("config.toml", "rb") as f:
-        config = Config(**load(f))
+    pl.Config().set_tbl_cols(14)
+    set_config(transform_output="polars")
+    config = get_config(analysis="metadata")
+    if config.regenerate:
+        make_metadata(config=config)
     seed_everything(config.random_seed)
-    train, val, test = get_data(config, regenerate=config.regenerate)
-    data_module = ABCDDataModule(
-        train=train,
-        val=val,
-        test=test,
-        batch_size=config.training.batch_size,
-        num_workers=cpu_count(),
-        dataset_class=RNNDataset,
-        target=config.target,
+    analyses = product(config.analyses, config.factor_models)
+    progress_bar = tqdm(
+        analyses, total=len(config.analyses) * len(config.factor_models)
     )
-    input_dim = train.shape[1] - 2
-    if config.tune:
-        study = tune(
-            config=config,
-            data_module=data_module,
-            input_dim=input_dim,
+    for analysis, factor_model in progress_bar:
+        if not any([config.evaluate, config.tune, config.shap]):
+            continue
+        config = get_config(analysis=analysis, factor_model=factor_model)
+        splits = get_dataset(
+            analysis=analysis, factor_model=factor_model, config=config
         )
-        best_model_path = get_best_checkpoint(
-            ckpt_folder=config.filepaths.checkpoints, mode="min"
+        data_module = ABCDDataModule(
+            **splits,
+            batch_size=config.training.batch_size,
+            num_workers=cpu_count(),
+            dataset_class=RNNDataset,
         )
-        model = Network.load_from_checkpoint(best_model_path)
-    else:
-        with open("data/studies/study.pkl", "rb") as f:
-            study = pickle.load(f)
-        if config.refit:
-            output_dim = (
-                1 if config.target == "p_factor" else len(config.labels.cbcl_labels)
-            )
-            model = Network(
+        input_dim = 1 if analysis == "autoregressive" else splits["train"].shape[-1] - 2
+        if config.tune:
+            tune(
+                config=config,
+                data_module=data_module,
                 input_dim=input_dim,
-                output_dim=output_dim,
-                momentum=config.optimizer.momentum,
-                nesterov=config.optimizer.nesterov,
-                **study.best_params,
+                output_dim=config.preprocess.n_quantiles,
             )
-            trainer, _ = make_trainer(config)
-            trainer.fit(model, datamodule=data_module)
-            cleanup_checkpoints(config.filepaths.checkpoints, mode="min")
-        else:
-            best_model_path = get_best_checkpoint(
-                ckpt_folder=config.filepaths.checkpoints, mode="min"
+        model = make_model(
+            input_dim=input_dim,
+            output_dim=config.preprocess.n_quantiles,
+            momentum=config.optimizer.momentum,
+            nesterov=config.optimizer.nesterov,
+            checkpoints=config.filepaths.data.results.checkpoints,
+        )
+        if config.evaluate:
+            evaluate_model(data_module=data_module, config=config, model=model)
+        if config.shap:
+            make_shap(
+                config=config,
+                model=model,
+                data_module=data_module,
+                analysis=analysis,
+                factor_model=factor_model,
             )
-            model = Network.load_from_checkpoint(best_model_path)
-    print(study.best_params)
-    data_module = ABCDDataModule(
-        train=train,
-        val=val,
-        test=test,
-        batch_size=500,
-        num_workers=cpu_count(),
-        dataset_class=RNNDataset,
-        target="p_factor",
-    )
-    if config.evaluate:
-        evaluate_model(config=config, model=model, data_module=data_module)
-    if config.plot:
-        plot(config=config, dataloader=data_module.test_dataloader())
     if config.tables:
-        make_tables()
+        make_tables(config=config)
+    if config.plot:
+        plot(config=config)
 
 
 if __name__ == "__main__":

@@ -2,27 +2,24 @@ from torch import tensor
 from lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
+import polars as pl
 
 
-def make_tensor_dataset(dataset, targets: str | list[str]):
+def make_tensor_dataset(dataset: pl.DataFrame):
     data = []
-    for _, subject in dataset.groupby("src_subject_id"):
-        match targets:
-            case str():
-                labels = subject.pop(targets)
-            case list():
-                labels = subject[targets]
-                subject = subject.drop(labels, axis=1)
-        subject.pop("src_subject_id")
+    for subject in dataset.partition_by(
+        "src_subject_id", maintain_order=True, include_key=False
+    ):
+        label = subject.drop_in_place("y_{t+1}")
+        label = tensor(label.to_numpy()).float()
         features = tensor(subject.to_numpy()).float()
-        label = tensor(labels.to_numpy()).float()
         data.append((features, label))
     return data
 
 
 class RNNDataset(Dataset):
-    def __init__(self, dataset, targets: str) -> None:
-        self.dataset = make_tensor_dataset(dataset, targets)
+    def __init__(self, dataset: pl.DataFrame) -> None:
+        self.dataset = make_tensor_dataset(dataset)
 
     def __len__(self):
         return len(self.dataset)
@@ -32,24 +29,30 @@ class RNNDataset(Dataset):
         return features, labels
 
 
-def collate(batch):
-    sequence, label = zip(*batch)
-    sequence = pad_sequence(sequence, batch_first=True)
-    label = pad_sequence(label, batch_first=True, padding_value=float("nan"))
-    return sequence, label
+def collate_fn(batch):
+    features, labels = zip(*batch)
+    padded_features = pad_sequence(features, batch_first=True, padding_value=0)
+    padded_labels = pad_sequence(labels, batch_first=True, padding_value=float("nan"))
+    return padded_features, padded_labels
 
 
 class ABCDDataModule(LightningDataModule):
     def __init__(
-        self, train, val, test, batch_size, dataset_class, num_workers, target
+        self,
+        train: pl.DataFrame,
+        val: pl.DataFrame,
+        test: pl.DataFrame,
+        batch_size: int,
+        dataset_class,
+        num_workers: int,
     ) -> None:
         super().__init__()
-        self.train_dataset = dataset_class(dataset=train, target=target)
-        self.val_dataset = dataset_class(dataset=val, target=target)
-        self.test_dataset = dataset_class(dataset=test, target=target)
+        self.train_dataset = dataset_class(dataset=train)
+        self.val_dataset = dataset_class(dataset=val)
+        self.test_dataset = dataset_class(dataset=test)
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.collate_fn = collate if dataset_class == RNNDataset else None
+        self.feature_names = train.drop(["src_subject_id", "y_{t+1}"]).columns
 
     def train_dataloader(self):
         return DataLoader(
@@ -59,9 +62,9 @@ class ABCDDataModule(LightningDataModule):
             num_workers=self.num_workers,
             drop_last=True,
             pin_memory=True,
-            collate_fn=self.collate_fn,
             persistent_workers=True,
             multiprocessing_context="fork",
+            collate_fn=collate_fn,
         )
 
     def val_dataloader(self):
@@ -72,8 +75,8 @@ class ABCDDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True,
-            collate_fn=self.collate_fn,
             multiprocessing_context="fork",
+            collate_fn=collate_fn,
         )
 
     def test_dataloader(self):
@@ -84,6 +87,6 @@ class ABCDDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=True,
-            collate_fn=self.collate_fn,
             multiprocessing_context="fork",
+            collate_fn=collate_fn,
         )

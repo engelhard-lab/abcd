@@ -1,117 +1,212 @@
-from cgi import test
-from shap import GradientExplainer
-from sklearn.linear_model import LinearRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.utils import resample
-from torch import concat, save, load as torch_load
+from functools import partial
+from typing import Callable
+import torch
 import polars as pl
-from tqdm import tqdm
-from abcd.model import make_trainer
-import pandas as pd
-import numpy as np
+from torchmetrics.classification import (
+    MulticlassAUROC,
+    MulticlassAveragePrecision,
+    MulticlassSpecificityAtSensitivity,
+    MulticlassSensitivityAtSpecificity,
+)
+from torchmetrics.wrappers import BootStrapper
+from torchmetrics.functional import roc, precision_recall_curve
 
-from abcd.tables import SEX_MAPPING
-
-REVERSE_EVENT_MAPPING = {
-    0: "Baseline",
-    1: "Year 1",
-    2: "Year 2",
-    3: "Year 3",
-    4: "Year 4",
-}
+from abcd.config import Config
+from abcd.dataset import ABCDDataModule
+from abcd.model import Network, make_trainer
 
 
-def get_predictions(config, model, data_module):
-    trainer, _ = make_trainer(config)
-    predictions = trainer.predict(
-        model=model, dataloaders=data_module.test_dataloader()
+def make_predictions(config: Config, model: Network, data_module: ABCDDataModule):
+    trainer = make_trainer(config, checkpoint=False)
+    predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
+    outputs, labels = zip(*predictions)
+    outputs = torch.concat(outputs)
+    labels = torch.concat(labels)
+    metadata = pl.read_csv(config.filepaths.data.raw.metadata)
+    test_metadata = metadata.filter(pl.col("Split").eq("test"))
+    df = pl.DataFrame({"output": outputs.cpu().numpy(), "label": labels.cpu().numpy()})
+    return pl.concat([test_metadata, df], how="horizontal")
+
+
+def get_predictions(df: pl.DataFrame, device: str = "cpu"):
+    outputs = torch.tensor(df["output"].to_list(), dtype=torch.float, device=device)
+    labels = torch.tensor(df["label"].to_numpy(), dtype=torch.long, device=device)
+    return outputs, labels
+
+
+def make_curve_df(df, name, quartile, x, y):
+    return pl.DataFrame(
+        {
+            "Metric": name,
+            "Variable": df["Variable"][0],
+            "Group": df["Group"][0],
+            "Quartile at t+1": quartile,
+            "x": x,
+            "y": y,
+        }
     )
-    y_pred, y_true = zip(*predictions)
-    y_pred = concat(y_pred)
-    y_true = concat(y_true)
-    mask = ~y_true.isnan()
-    y_pred = y_pred[mask].numpy()
-    y_true = y_true[mask].numpy()
-    return y_pred.squeeze(1), y_true
 
 
-def r2_results(y_pred, y_true):
-    test_subjects = (
-        pl.read_csv(
-            "data/test_untransformed.csv",
-            columns=[
-                "src_subject_id",
-                "eventname",
-                "p_factor",
-                "demo_sex_v2_1",
-                "interview_age",
-            ],
+def make_curve(df: pl.DataFrame, curve: Callable, name: str):
+    outputs, labels = get_predictions(df)
+    task = "multiclass"
+    num_classes = outputs.shape[-1]
+    if name == "ROC":
+        x, y, _ = curve(outputs, labels, task=task, num_classes=num_classes)
+    if name == "PR":
+        y, x, _ = curve(outputs, labels, task=task, num_classes=num_classes)
+    dfs = []
+    for quartile, (x_i, y_i) in enumerate(zip(x, y), start=1):
+        quartile = 4 if outputs.dim() == 1 else quartile
+        curve_df = make_curve_df(
+            df=df, name=name, quartile=quartile, x=x_i.numpy(), y=y_i.numpy()
+        )
+        dfs.append(curve_df)
+    df = pl.concat(dfs)
+    return df
+
+
+def bootstrap_metric(metric, outputs, labels, n_bootstraps: int):
+    bootstrap = BootStrapper(
+        metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
+    )
+    bootstrap.to(outputs.device)
+    bootstrap.update(outputs, labels)
+    bootstraps = bootstrap.compute()["raw"].cpu().numpy()
+    columns = [str(i) for i in range(1, outputs.shape[-1] + 1)]
+    return pl.DataFrame(bootstraps, schema=columns)
+
+
+def make_metrics(df: pl.DataFrame, n_bootstraps: int):
+    if df.shape[0] < 10:
+        return pl.DataFrame(
+            {
+                "Metric": [],
+                "Variable": [],
+                "Group": [],
+                "Quartile at t+1": [],
+                "value": [],
+            }
+        )
+    outputs, labels = get_predictions(df)
+    auroc = MulticlassAUROC(num_classes=outputs.shape[-1], average="none")
+    ap = MulticlassAveragePrecision(num_classes=outputs.shape[-1], average="none")
+    bootstrapped_auroc = bootstrap_metric(
+        auroc, outputs, labels, n_bootstraps=n_bootstraps
+    ).with_columns(pl.lit("AUROC").alias("Metric"))
+    bootstrapped_ap = bootstrap_metric(
+        ap, outputs, labels, n_bootstraps=n_bootstraps
+    ).with_columns(pl.lit("AP").alias("Metric"))
+    df = (
+        pl.concat(
+            [bootstrapped_auroc, bootstrapped_ap],
+            how="diagonal_relaxed",
         )
         .with_columns(
-            pl.col("eventname").replace(REVERSE_EVENT_MAPPING),
-            pl.col("demo_sex_v2_1").replace(SEX_MAPPING),
-            (pl.col("interview_age") / 12).round(0).cast(pl.Int32),
+            pl.lit(df["Group"][0]).cast(pl.String).alias("Group"),
+            pl.lit(df["Variable"][0]).cast(pl.String).alias("Variable"),
         )
-        .with_columns(pl.all().forward_fill().over("src_subject_id"))
+        .melt(id_vars=["Metric", "Variable", "Group"], variable_name="Quartile at t+1")
+        .with_columns(pl.col("Quartile at t+1").cast(pl.Int64))
     )
-    demographics = pl.read_csv(
-        "data/demographics.csv",
-        columns=["src_subject_id", "eventname", "race_ethnicity"],
-    ).with_columns(
-        pl.col("race_ethnicity").forward_fill().over("src_subject_id"),
-        pl.col("eventname").replace(REVERSE_EVENT_MAPPING),
+    return df
+
+
+def calc_sensitivity_and_specificity(df: pl.DataFrame):
+    df = df.filter(
+        pl.col("Variable").eq("High-risk scenario") & pl.col("Group").eq("Conversion")
     )
-    df = (
-        test_subjects.join(demographics, on=["src_subject_id", "eventname"], how="left")
-        .with_columns(y_pred=y_pred, y_true=y_true)
-        .fill_null("Unknown")
+    outputs, labels = get_predictions(df=df)
+    min_sensitivity = 0.5
+    specificity_metric = MulticlassSpecificityAtSensitivity(
+        num_classes=outputs.shape[-1], min_sensitivity=min_sensitivity
     )
-    print(df)
-    df.write_csv("data/results/predicted_vs_observed.csv")
-
-
-def make_shap_values(model, data_module):
-    test_dataloader = iter(data_module.test_dataloader())
-    X, _ = next(test_dataloader)
-    background, _ = next(test_dataloader)
-    explainer = GradientExplainer(model, background.to("mps:0"))
-    shap_values = explainer.shap_values(X.to("mps:0"))
-    save(shap_values, "data/results/shap_values.pt")
-
-
-def regress_shap_values(dataloader):
-    feature_names = (
-        pl.read_csv("data/analytic/test.csv", n_rows=1)
-        .drop(["src_subject_id", "p_factor"])
-        .columns
+    specificity, threshold = specificity_metric(outputs, labels)
+    specificity_df = pl.DataFrame(
+        {
+            "Risk": ["None", "Low", "Moderate", "High"],
+            "Metric": "Specificity",
+            "Minimum": f"Sensitivity >= {min_sensitivity}",
+            "Value": specificity.numpy().round(decimals=2),
+            "Threshold": threshold[1].numpy().round(decimals=2),
+        }
     )
-    test_dataloader = iter(dataloader)
-    X, _ = next(test_dataloader)
-    X = pd.DataFrame(X.view(-1, X.shape[2]), columns=feature_names)
-    shap_values_list = torch_load("data/results/shap_values.pt")
-    shap_values = np.mean(shap_values_list, axis=-1)
-    shap_values = pd.DataFrame(
-        shap_values.reshape(-1, shap_values.shape[2]), columns=feature_names
+    min_specificity = 0.5
+    sensitivity_metric = MulticlassSensitivityAtSpecificity(
+        num_classes=outputs.shape[-1], min_specificity=min_specificity
     )
-    coefs = {name: [] for name in feature_names}
-    n_bootstraps = 1000
-    for _ in tqdm(range(n_bootstraps)):
-        X_resampled, shap_resampled = resample(X, shap_values)
-        for col in shap_values.columns:
-            coef = (
-                make_pipeline(StandardScaler(), LinearRegression())
-                .fit(X_resampled[[col]], shap_resampled[[col]])
-                .named_steps["linearregression"]
-                .coef_[0, 0]
-            )
-            coefs[col].append(coef)
-    df = pl.DataFrame(coefs).melt()
-    df.write_csv("data/results/shap_coefs.csv")
+    sensitivity, threshold = sensitivity_metric(outputs, labels)
+    sensitivity_df = pl.DataFrame(
+        {
+            "Risk": ["None", "Low", "Moderate", "High"],
+            "Metric": "Sensitivity",
+            "Minimum": f"Specificity >= {min_specificity}",
+            "Value": sensitivity.numpy().round(decimals=2),
+            "Threshold": threshold.numpy().round(decimals=2),
+        }
+    )
+    return pl.concat([specificity_df, sensitivity_df])
 
 
-def evaluate_model(config, model, data_module):
-    # make_shap_values(model, data_module)
-    # regress_shap_values(dataloader=data_module.test_dataloader())
-    y_pred, y_true = get_predictions(config, model, data_module)
-    r2_results(y_pred=y_pred, y_true=y_true)
+def make_prevalence(df: pl.DataFrame):
+    return df.with_columns(
+        pl.col("Quartile at t+1")
+        .count()
+        .over("Variable", "Group", "Quartile at t+1")
+        .truediv(pl.col("Quartile at t+1").count().over("Variable", "Group"))
+        .alias("Prevalence"),
+    ).select(["Variable", "Group", "Quartile at t+1", "Prevalence"])
+
+
+def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
+    model.to(config.device)
+    config.filepaths.data.results.metrics.mkdir(parents=True, exist_ok=True)
+    if config.predict or not config.filepaths.data.results.predictions.is_file():
+        df = make_predictions(config=config, model=model, data_module=data_module)
+        df.write_parquet(config.filepaths.data.results.predictions)
+    else:
+        df = pl.read_parquet(config.filepaths.data.results.predictions)
+    df = df.with_columns(
+        pl.when(pl.col("Quartile at t").eq(4))
+        .then(pl.lit("Persistence"))
+        .otherwise(pl.lit("Conversion"))
+        .alias("High-risk scenario")
+    )
+    variables = [
+        "High-risk scenario",
+        "Sex",
+        "Race",
+        "Age",
+        "Follow-up event",
+        "ADI quartile",
+        "Event year",
+    ]
+    df = df.melt(
+        id_vars=["output", "label", "Quartile at t", "Quartile at t+1"],
+        value_vars=variables,
+        variable_name="Variable",
+        value_name="Group",
+    )
+    df_all = df.filter(pl.col("Variable").eq("High-risk scenario")).with_columns(
+        pl.lit("Agnostic").alias("Group")
+    )
+    df = pl.concat([df_all, df]).drop_nulls("Group")
+    grouped_df = df.group_by("Variable", "Group", maintain_order=True)
+    prevalence = make_prevalence(df)
+    metrics = grouped_df.map_groups(
+        partial(make_metrics, n_bootstraps=config.n_bootstraps)
+    )
+    metrics = metrics.join(prevalence, on=["Variable", "Group", "Quartile at t+1"])
+    metrics.write_csv(config.filepaths.data.results.metrics / "metrics.csv")
+    pr_curve = grouped_df.map_groups(
+        partial(make_curve, curve=precision_recall_curve, name="PR")
+    )
+    roc_curve = grouped_df.map_groups(partial(make_curve, curve=roc, name="ROC"))
+    curves = pl.concat([pr_curve, roc_curve], how="diagonal_relaxed").select(
+        ["Metric", "Variable", "Group", "Quartile at t+1", "x", "y"]
+    )
+    curves.write_csv(config.filepaths.data.results.metrics / "curves.csv")
+    sens_spec = calc_sensitivity_and_specificity(df=df)
+    sens_spec.write_csv(
+        config.filepaths.data.results.metrics / "sensitivity_specificity.csv"
+    )

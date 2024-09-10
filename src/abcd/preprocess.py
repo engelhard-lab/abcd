@@ -1,30 +1,30 @@
 from collections import defaultdict
 from typing import Callable
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.impute import KNNImputer
-from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import FunctionTransformer, make_pipeline
+from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
+from sklearn.decomposition import FactorAnalysis
 import polars as pl
-from polars.type_aliases import JoinStrategy
 import polars.selectors as cs
-import pandas as pd
 
-from pathlib import Path
-from functools import reduce
+from functools import partial, reduce
 
 from abcd.config import Config
-from abcd.metadata import make_variable_metadata
 
-EVENT_MAPPING = {
-    "baseline_year_1_arm_1": 0,
-    "1_year_follow_up_y_arm_1": 1,
-    "2_year_follow_up_y_arm_1": 2,
-    "3_year_follow_up_y_arm_1": 3,
-    "4_year_follow_up_y_arm_1": 4,
-}
+EVENTS = [
+    "baseline_year_1_arm_1",
+    "1_year_follow_up_y_arm_1",
+    "2_year_follow_up_y_arm_1",
+    "3_year_follow_up_y_arm_1",
+    "4_year_follow_up_y_arm_1",
+]
+EVENT_INDEX = list(range(len(EVENTS)))
+EVENT_MAPPING = dict(zip(EVENTS, EVENT_INDEX))
 
 
-def drop_null_columns(features, cutoff=0.25):
+def drop_null_columns(features: pl.DataFrame, cutoff=0.25) -> pl.DataFrame:
     null_proportion = features.null_count() / features.shape[0]
     columns_to_keep = (null_proportion < cutoff).transpose().to_series()
     return features.select(
@@ -32,47 +32,42 @@ def drop_null_columns(features, cutoff=0.25):
     )
 
 
-def join_dataframes(
-    dfs: list[pl.DataFrame], join_on: list[str], how: JoinStrategy
-) -> pl.DataFrame:
+def join_dataframes(dfs: list[pl.DataFrame], join_on: list[str]) -> pl.DataFrame:
     return reduce(
         lambda left, right: left.join(
             right,
-            how=how,
+            how="full",
+            coalesce=True,
             on=join_on,
         ),
         dfs,
-    )
+    ).sort(join_on)
 
 
 def make_demographics(df: pl.DataFrame):
     education = ["demo_prnt_ed_v2", "demo_prtnr_ed_v2"]
+    sex = ["demo_sex_v2_null", "demo_sex_v2_2", "demo_sex_v2_3"]
+    join_on = ["src_subject_id", "eventname"]
     df = (
-        df.with_columns(
-            pl.max_horizontal(education).alias("parent_highest_education"),
-        )
-        .with_columns(
-            pl.all().forward_fill().backward_fill().over("src_subject_id"),
-        )
+        df.with_columns(pl.max_horizontal(education).alias("parent_highest_education"))
+        .with_columns(pl.all().forward_fill().over("src_subject_id"))
         .drop(education)
-        .to_dummies("demo_sex_v2", drop_first=True)
+        .to_dummies("demo_sex_v2")
+        .select(cs.exclude(education + sex))
+        .sort(join_on)
     )
     return df
 
 
-def make_sites(df: pl.DataFrame):
-    return df.to_dummies("site_id_l", drop_first=True)
-
-
-def make_adi(df: pl.DataFrame):
-    columns = [
+def make_adi(df: pl.DataFrame, join_on: list[str]):
+    adi_columns = [
         "reshist_addr1_adi_perc",
         "reshist_addr2_adi_perc",
         "reshist_addr3_adi_perc",
     ]
-    return df.with_columns(pl.mean_horizontal(columns).alias("adi_percentile")).drop(
-        columns
-    )
+    return df.with_columns(
+        pl.mean_horizontal(adi_columns).forward_fill().alias("adi_percentile")
+    ).select(*join_on, "adi_percentile")
 
 
 def get_datasets(config: Config) -> list[pl.DataFrame]:
@@ -90,30 +85,39 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
         "srpf_",
         "_fc",
     )
-    transforms: defaultdict[str, Callable] = defaultdict(lambda: lambda df: df)
+    transforms: defaultdict[str, Callable[[pl.DataFrame], pl.DataFrame]] = defaultdict(
+        lambda: lambda df: df
+    )
     transforms.update(
         {
             "abcd_p_demo": make_demographics,
-            "abcd_y_lt": make_sites,
-            "led_l_adi": make_adi,
+            "led_l_adi": partial(make_adi, join_on=config.join_on),
         }
     )
     dfs = []
     for filename, metadata in config.features.model_dump().items():
         df = pl.read_csv(
-            source=config.filepaths.features / f"{filename}.csv",
+            source=config.filepaths.data.raw.features / f"{filename}.csv",
             null_values=["", "null"],
-            infer_schema_length=50_000,
+            infer_schema_length=100_000,
+            n_rows=2000 if config.fast_dev_run else None,
         )
-        if len(metadata["columns"]) > 0:
+        if metadata["columns"]:
             columns = pl.col(config.join_on + metadata["columns"])
         else:
             columns = df.columns
         transform = transforms[filename]
         df = (
             df.select(columns)
-            .select(~cs.contains(columns_to_drop))
+            .select(~cs.contains(*columns_to_drop))
+            .filter(pl.col("eventname").is_in(EVENTS))
             .with_columns(pl.all().replace({777: None, 999: None}))
+            .with_columns(
+                pl.col("eventname")
+                .replace(EVENT_MAPPING)
+                .cast(pl.Int32)
+                .alias("eventname")
+            )
             .pipe(transform)
             .pipe(drop_null_columns)
         )
@@ -121,102 +125,234 @@ def get_datasets(config: Config) -> list[pl.DataFrame]:
     return dfs
 
 
-def make_p_factor_labels(filepath: Path, label: str) -> pl.DataFrame:
-    return (
-        pl.read_csv(filepath, null_values="NA")
-        .with_columns(pl.col(label).shift(-1).over("src_subject_id"))
-        .drop_nulls()
+def filter_data(df: pl.DataFrame, label_columns: list[str]):
+    return df.filter(~pl.all_horizontal(pl.col(label_columns).is_null()))
+
+
+def impute_within_subject(df: pl.DataFrame, label_columns: list[str]):
+    return df.with_columns(
+        cs.exclude(label_columns).forward_fill().over("src_subject_id")
     )
-
-
-def make_labels(config: Config):
-    match config.target:
-        case "p_factor":
-            return make_p_factor_labels(
-                filepath=config.filepaths.labels, label=config.labels.p_factor
-            )
-        case "cbcl":
-            return pl.read_csv(
-                config.filepaths.cbcl_labels, columns=config.labels.cbcl_labels
-            )
-        case _:
-            raise ValueError(
-                f"Invalid label option '{config.target}'. Choose from 'p_factor' or 'subscales'."
-            )
-
-
-def make_dataset(dfs: list[pl.DataFrame], config: Config):
-    features = join_dataframes(dfs=dfs, join_on=config.join_on, how="outer_coalesce")
-    features.write_csv("data/analytic/features.csv")
-    labels = make_labels(config=config)
-    df = (
-        labels.join(other=features, on=config.join_on, how="inner")
-        .with_columns(pl.col("eventname").replace(EVENT_MAPPING))
-        .sort(config.join_on)
-    )
-    print(df)
-    df.write_csv("data/analytic/dataset.csv")
-    return df.partition_by("src_subject_id", include_key=True)
-
-
-def make_splits(df, config: Config):
-    X_train, X_val_test = train_test_split(
-        df, train_size=config.train_size, random_state=config.random_seed, shuffle=True
-    )
-    X_val, X_test = train_test_split(
-        X_val_test, train_size=0.5, random_state=config.random_seed, shuffle=True
-    )
-    X_train = pl.concat(X_train).to_pandas()
-    X_val = pl.concat(X_val).to_pandas()
-    X_test = pl.concat(X_test).to_pandas()
-    X_test.write_csv("data/test_untransformed.csv", index=False)
-    match config.target:
-        case "p_factor":
-            y_train = X_train.pop("p_factor")
-            y_val = X_val.pop("p_factor")
-            y_test = X_test.pop("p_factor")
-        case "cbcl":
-            y_train = X_train[config.labels.cbcl_labels]
-            y_val = X_val[config.labels.cbcl_labels]
-            y_test = X_test[config.labels.cbcl_labels]
-            X_train = X_train.drop(config.labels.cbcl_labels, axis=1)
-            X_val = X_val.drop(config.labels.cbcl_labels, axis=1)
-            X_test = X_test.drop(config.labels.cbcl_labels, axis=1)
-    group_train = X_train.pop("src_subject_id")
-    group_val = X_val.pop("src_subject_id")
-    group_test = X_test.pop("src_subject_id")
-    pipeline_steps = [
-        ("scaler", StandardScaler()),
-        ("imputer", KNNImputer(n_neighbors=5)),
-    ]
-    pipeline = Pipeline(steps=pipeline_steps)
-    X_train = pipeline.fit_transform(X_train)
-    X_val = pipeline.transform(X_val)
-    X_test = pipeline.transform(X_test)
-    train = pd.concat([group_train, y_train, X_train], axis=1)  # type: ignore
-    val = pd.concat([group_val, y_val, X_val], axis=1)  # type: ignore
-    test = pd.concat([group_test, y_test, X_test], axis=1)  # type: ignore
-    return train, val, test
 
 
 def generate_data(config: Config):
-    dfs = get_datasets(config=config)
-    make_variable_metadata(dfs=dfs, features=config.features)
-    df = make_dataset(dfs, config=config)
-    train, val, test = make_splits(df, config=config)
-    train.to_csv(config.filepaths.train, index=False)
-    val.to_csv(config.filepaths.val, index=False)
-    test.to_csv(config.filepaths.test, index=False)
-    return train, val, test
+    datasets = get_datasets(config=config)
+    return (
+        join_dataframes(dfs=datasets, join_on=config.join_on)
+        .pipe(
+            filter_data,
+            label_columns=config.features.mh_p_cbcl.columns,
+        )
+        .pipe(
+            impute_within_subject,
+            label_columns=config.features.mh_p_cbcl.columns,
+        )
+    )
 
 
-def get_data(config: Config, regenerate: bool):
-    paths = [config.filepaths.train, config.filepaths.val, config.filepaths.test]
-    not_all_files_exist = not all([filepath.exists() for filepath in paths])
-    if not_all_files_exist or regenerate:
-        return generate_data(config=config)
+def get_brain_features(config: Config):
+    brain_datasets = (
+        "mri_y_dti_fa_fs_at",
+        "mri_y_rsfmr_cor_gp_gp",
+        "mri_y_tfmr_sst_csvcg_dsk",
+        "mri_y_tfmr_mid_alrvn_dsk",
+        "mri_y_tfmr_nback_2b_dsk",
+    )
+    return [
+        column
+        for name, features in config.features.model_dump().items()
+        for column in features["columns"]
+        if name in brain_datasets
+    ]
+
+
+def get_features(df: pl.DataFrame, analysis: str, config: Config):
+    brain_features = get_brain_features(config)
+    exclude = [config.join_on[0], "race_ethnicity", "interview_date"]
+    match analysis:
+        case "metadata":
+            df = df.select(cs.exclude(exclude[:-2]))
+        case "questions_mri":
+            df = df.select(cs.exclude(exclude + config.features.mh_p_cbcl.columns))
+        case "questions":
+            df = df.select(
+                cs.exclude(exclude + config.features.mh_p_cbcl.columns + brain_features)
+            )
+        case "questions_symptoms":
+            df = df.select(cs.exclude(exclude + brain_features))
+        case "symptoms" | "autoregressive":
+            df = df.select(config.features.mh_p_cbcl.columns)
+        case "questions_mri_symptoms":
+            df = df.select(cs.exclude(exclude))
+        case _:
+            raise ValueError(f"Invalid analysis: {analysis}")
+    return df.columns
+
+
+def split_data(df: pl.DataFrame, group: str, train_size: float, random_state: int):
+    dfs = df.partition_by(group, maintain_order=True)
+    train, val_test = train_test_split(
+        dfs,
+        train_size=train_size,
+        random_state=random_state,
+        shuffle=True,
+    )
+    val, test = train_test_split(
+        val_test, train_size=0.5, random_state=random_state, shuffle=False
+    )
+    return {"train": pl.concat(train), "val": pl.concat(val), "test": pl.concat(test)}
+
+
+def make_transformer(
+    analysis: str,
+    feature_columns: list[str],
+    label_columns: list[str],
+    n_quantiles: int,
+):
+    identitiy_transform = FunctionTransformer(lambda x: x)
+    if analysis == "autoregressive":
+        feature_pipeline = make_pipeline(
+            FactorAnalysis(n_components=1),
+            FunctionTransformer(lambda x: x.rename({"factoranalysis0": "p-factor"})),
+        )
     else:
-        train = pd.read_csv(config.filepaths.train)
-        val = pd.read_csv(config.filepaths.val)
-        test = pd.read_csv(config.filepaths.test)
-        return train, val, test
+        feature_pipeline = identitiy_transform
+    label_pipeline = make_pipeline(
+        FactorAnalysis(n_components=1),
+        KBinsDiscretizer(n_bins=n_quantiles, encode="ordinal", strategy="quantile"),
+        FunctionTransformer(lambda x: x.rename({"factoranalysis0": "y_t"})),
+    )
+    transformers = [
+        ("src_subject_id", identitiy_transform, ["src_subject_id"]),
+        ("features", feature_pipeline, feature_columns),
+        ("labels", label_pipeline, label_columns),
+    ]
+    return ColumnTransformer(
+        transformers=transformers,
+        remainder="drop",
+        verbose_feature_names_out=False,
+    )
+
+
+def transform_within_event(splits: dict[str, pl.DataFrame], transformer, event: str):
+    transformers = {}
+    train_groups = []
+    for name, train_group in splits["train"].group_by(event, maintain_order=True):
+        transformers[name] = transformer()
+        train_groups.append(transformers[name].fit_transform(train_group))
+    val_groups = []
+    for name, val_group in splits["val"].group_by(event, maintain_order=True):
+        val_groups.append(transformers[name].transform(val_group))
+    test_groups = []
+    for name, test_group in splits["test"].group_by(event, maintain_order=True):
+        test_groups.append(transformers[name].transform(test_group))
+    splits["train"] = pl.concat(train_groups)
+    splits["val"] = pl.concat(val_groups)
+    splits["test"] = pl.concat(test_groups)
+    return splits
+
+
+def format_labels(
+    splits: dict[str, pl.DataFrame], group: str, analysis: str
+) -> dict[str, pl.DataFrame]:
+    shift_y = pl.col("y_t").shift(-1).over(group).alias("y_{t+1}")
+    columns = (group, "y_t", "y_{t+1}")
+    for name, split in splits.items():
+        split = (
+            split.with_columns(shift_y)
+            .select(pl.col(columns), pl.exclude(columns))
+            .drop_nulls(subset=["y_{t+1}"])
+        )
+        if analysis != "metadata":
+            split = split.drop("y_t")
+        if analysis == "autoregressive":
+            split = split.select(group, "p-factor", "y_{t+1}")
+        splits[name] = split
+    return splits
+
+
+def transform_data(
+    splits: dict,
+    group: str,
+    event: str,
+    feature_columns: list[str],
+    label_columns: list[str],
+    analysis: str,
+    factor_model: str,
+    n_quantiles: int,
+) -> dict[str, pl.DataFrame]:
+    columns = list(set(feature_columns + label_columns))
+    scaler = ColumnTransformer(
+        transformers=[("scaler", StandardScaler(), columns)],
+        remainder="passthrough",
+        verbose_feature_names_out=False,
+    )
+    splits["train"] = scaler.fit_transform(splits["train"])
+    splits["val"] = scaler.transform(splits["val"])
+    splits["test"] = scaler.transform(splits["test"])
+    imputer = partial(
+        ColumnTransformer,
+        transformers=[("imputer", SimpleImputer(), columns)],
+        remainder="passthrough",
+        verbose_feature_names_out=False,
+    )
+    splits = transform_within_event(splits=splits, transformer=imputer, event=event)
+    partial_transformer = partial(
+        make_transformer,
+        analysis=analysis,
+        feature_columns=feature_columns,
+        label_columns=label_columns,
+        n_quantiles=n_quantiles,
+    )
+    if factor_model == "within_event":
+        splits = transform_within_event(
+            splits=splits,
+            transformer=partial_transformer,
+            event=event,
+        )
+    else:
+        transformer = partial_transformer()
+        splits["train"] = transformer.fit_transform(splits["train"])
+        splits["val"] = transformer.transform(splits["val"])
+        splits["test"] = transformer.transform(splits["test"])
+    splits = format_labels(splits=splits, group=group, analysis=analysis)
+    return splits
+
+
+def make_dataset(config: Config, analysis: str, factor_model: str):
+    df = generate_data(config=config)
+    df.write_csv(config.filepaths.data.raw.dataset)
+    group, event = config.join_on
+    splits = split_data(
+        df=df,
+        group=config.join_on[0],
+        train_size=config.preprocess.train_size,
+        random_state=config.random_seed,
+    )
+    features = get_features(df, analysis=analysis, config=config)
+    splits = transform_data(
+        splits=splits,
+        group=group,
+        event=event,
+        feature_columns=features,
+        label_columns=config.features.mh_p_cbcl.columns,
+        analysis=analysis,
+        factor_model=factor_model,
+        n_quantiles=config.preprocess.n_quantiles,
+    )
+    splits["train"].write_csv(config.filepaths.data.analytic.train)
+    splits["val"].write_csv(config.filepaths.data.analytic.val)
+    splits["test"].write_csv(config.filepaths.data.analytic.test)
+    return splits
+
+
+def get_dataset(analysis: str, factor_model: str, config: Config):
+    if config.regenerate:
+        splits = make_dataset(config, analysis, factor_model)
+    else:
+        splits = {
+            "train": pl.read_csv(config.filepaths.data.analytic.train),
+            "val": pl.read_csv(config.filepaths.data.analytic.val),
+            "test": pl.read_csv(config.filepaths.data.analytic.test),
+        }
+    return splits

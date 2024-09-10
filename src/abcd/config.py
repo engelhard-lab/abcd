@@ -1,28 +1,46 @@
+from tomllib import load
 from pydantic import BaseModel
 from pathlib import Path
+from copy import deepcopy
 
 
-class Filepaths(BaseModel):
-    data: Path
-    features: Path
-    labels: Path
-    cbcl_labels: Path
-    checkpoints: Path
-    logs: Path
+class Splits(BaseModel):
     train: Path
     val: Path
     test: Path
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        self.features = self.data / self.features
-        self.labels = self.data / self.labels
-        self.labels = self.data / self.cbcl_labels
-        self.checkpoints = self.data / self.checkpoints
-        self.logs = self.data / self.logs
-        self.train = self.data / self.train
-        self.val = self.data / self.val
-        self.test = self.data / self.test
+
+class Raw(BaseModel):
+    dataset: Path
+    metadata: Path
+    features: Path
+    splits: Path
+
+
+class Results(BaseModel):
+    metrics: Path
+    checkpoints: Path
+    study: Path
+    logs: Path
+    predictions: Path
+
+
+class Data(BaseModel):
+    raw: Raw
+    analytic: Splits
+    results: Results
+
+
+class Filepaths(BaseModel):
+    tables: Path
+    plots: Path
+    data: Data
+
+
+class Preprocess(BaseModel):
+    n_neighbors: int
+    n_quantiles: int
+    train_size: float
 
 
 class Training(BaseModel):
@@ -49,61 +67,89 @@ class Model(BaseModel):
     dropout: dict[str, float]
 
 
-class Data(BaseModel):
+class Dataset(BaseModel):
     name: str
     respondent: str
     columns: list[str]
 
 
-class Labels(BaseModel):
-    p_factor: str
-    cbcl_labels: list[str]
-
-
 class Features(BaseModel):
-    abcd_p_demo: Data
-    led_l_adi: Data
-    abcd_y_lt: Data
-    abcd_aces: Data
-    ce_p_fes: Data
-    ce_y_fes: Data
-    ce_p_nsc: Data
-    ce_y_nsc: Data
-    ce_y_pm: Data
-    ce_p_psb: Data
-    ce_y_psb: Data
-    ce_y_srpf: Data
-    nt_p_stq: Data
-    nt_y_st: Data
-    ph_p_sds: Data
-    su_p_pr: Data
-    mri_y_dti_fa_fs_at: Data
-    mri_y_rsfmr_cor_gp_gp: Data
-    mri_y_tfmr_sst_csvcg_dsk: Data
-    mri_y_tfmr_mid_alrvn_dsk: Data
-    mri_y_tfmr_nback_2b_dsk: Data
+    mh_p_cbcl: Dataset
+    abcd_p_demo: Dataset
+    led_l_adi: Dataset
+    abcd_y_lt: Dataset
+    abcd_aces: Dataset
+    ce_p_fes: Dataset
+    ce_y_fes: Dataset
+    ce_p_nsc: Dataset
+    ce_y_nsc: Dataset
+    ce_y_pm: Dataset
+    ce_p_psb: Dataset
+    ce_y_psb: Dataset
+    ce_y_srpf: Dataset
+    nt_p_stq: Dataset
+    nt_y_st: Dataset
+    ph_p_sds: Dataset
+    su_p_pr: Dataset
+    mh_p_fhx: Dataset
+    mri_y_dti_fa_fs_at: Dataset
+    mri_y_rsfmr_cor_gp_gp: Dataset
+    mri_y_tfmr_sst_csvcg_dsk: Dataset
+    mri_y_tfmr_mid_alrvn_dsk: Dataset
+    mri_y_tfmr_nback_2b_dsk: Dataset
 
 
 class Config(BaseModel):
     fast_dev_run: bool
     random_seed: int
     regenerate: bool
+    predict: bool
     tune: bool
-    refit: bool
+    log: bool
     evaluate: bool
+    shap: bool
     plot: bool
     tables: bool
     n_trials: int
+    n_bootstraps: int
     verbose: bool
-    train_size: float
     n_trials: int
-    method: str
     join_on: list[str]
-    target: str
+    analyses: list[str]
+    factor_models: list[str]
+    device: str
     filepaths: Filepaths
-    labels: Labels
+    preprocess: Preprocess
     features: Features
     training: Training
     logging: Logging
     optimizer: Optimizer
     model: Model
+
+
+def update_paths(new_path: Path, config: Config) -> Config:
+    analytic = deepcopy(config.filepaths.data.analytic.model_dump())
+    for name, path in analytic.items():
+        new_filepath = new_path / path
+        new_filepath.parent.mkdir(parents=True, exist_ok=True)
+        analytic[name] = new_filepath
+    config.filepaths.data.analytic = Splits(**analytic)
+    results = deepcopy(config.filepaths.data.results.model_dump())
+    for name, path in results.items():
+        new_filepath = new_path / path
+        new_filepath.parent.mkdir(parents=True, exist_ok=True)
+        results[name] = new_filepath
+    config.filepaths.data.results = Results(**results)
+    return config
+
+
+def get_config(analysis: str | None = None, factor_model: str | None = None) -> Config:
+    with open("config.toml", "rb") as f:
+        config = Config(**load(f))
+    if analysis is None:
+        return config
+    elif analysis == "metadata":
+        new_path = Path("data/analyses/metadata")
+    else:
+        new_path = Path(f"data/analyses/{factor_model}/{analysis}")
+    return update_paths(new_path=new_path, config=config)
