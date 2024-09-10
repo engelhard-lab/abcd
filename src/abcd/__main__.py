@@ -9,6 +9,7 @@ from itertools import product
 from abcd.dataset import ABCDDataModule, RNNDataset
 from abcd.evaluate import evaluate_model
 from abcd.importance import make_shap
+from abcd.metadata import make_metadata
 from abcd.preprocess import get_dataset
 from abcd.config import get_config
 from abcd.model import make_model
@@ -20,7 +21,9 @@ from abcd.tune import tune
 def main():
     pl.Config().set_tbl_cols(14)
     set_config(transform_output="polars")
-    config = get_config()
+    config = get_config(analysis="metadata")
+    if config.regenerate:
+        make_metadata(config=config)
     seed_everything(config.random_seed)
     analyses = product(config.analyses, config.factor_models)
     progress_bar = tqdm(

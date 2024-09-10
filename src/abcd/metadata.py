@@ -2,7 +2,7 @@ import polars as pl
 import polars.selectors as cs
 from sklearn import set_config
 
-from abcd.config import Features, get_config
+from abcd.config import Config, Features, get_config
 from abcd.preprocess import get_dataset, get_datasets
 
 
@@ -67,7 +67,8 @@ def captialize(column: str) -> pl.Expr:
 def format_questions() -> pl.Expr:
     return (
         pl.col("question")
-        .str.replace("\\..*|(!s)/(!g).*|\\?.*", "")
+        .str.replace(r"(\d+)\.\s+", "")
+        .str.replace(r"\..*|(!s)/(!g).*|\?.*", "")
         .str.to_lowercase()
         .str.slice(0)
     )
@@ -86,27 +87,27 @@ def make_variable_metadata(dfs: list[pl.DataFrame], features: Features):
             "notes": "response",
         }
     )
+    df = variables.join(df, on=["table", "variable"], how="left", coalesce=True)
     df = (
-        (
-            variables.join(df, on=["table", "variable"], how="left", coalesce=True)
-            .with_columns(
-                format_questions(),
-                pl.col("dataset").str.replace_all("_", " "),
-                pl.col("response").str.replace_all("\\s*/\\s*[^;]+", ""),
-            )
-            .with_columns(
-                captialize("dataset"),
-                captialize("question"),
-            )
-            .with_columns(
-                rename_questions(),
-                rename_datasets(),
-            )
+        df.with_columns(
+            format_questions(),
+            pl.col("dataset").str.replace_all("_", " "),
+            pl.col("response").str.replace_all("\\s*/\\s*[^;]+", ""),
+        )
+        .with_columns(
+            captialize("dataset"),
+            captialize("question"),
+        )
+        .with_columns(
+            rename_questions(),
+            rename_datasets(),
         )
         .unique(subset=["variable"])
         .sort("dataset", "respondent", "variable")
     )
-    df.write_csv("data/supplement/files/supplemental_file_1.csv")
+    print(df)
+    print(df.filter(pl.col("table").eq("mh_p_fhx")))
+    df.write_csv("data/supplement/files/supplemental_table_1.csv")
 
 
 RACE_MAPPING = {1: "White", 2: "Black", 3: "Hispanic", 4: "Asian", 5: "Other"}
@@ -156,12 +157,15 @@ def make_subject_metadata(splits: dict[str, pl.DataFrame]) -> pl.DataFrame:
     return df
 
 
-if __name__ == "__main__":
-    pl.Config().set_tbl_cols(14)
-    set_config(transform_output="polars")
-    config = get_config(analysis="metadata")
+def make_metadata(config: Config):
     datasets = get_datasets(config=config)
     make_variable_metadata(dfs=datasets, features=config.features)
     splits = get_dataset(analysis="metadata", factor_model="within_year", config=config)
     metadata = make_subject_metadata(splits=splits)
     metadata.write_csv(config.filepaths.data.raw.metadata)
+
+
+if __name__ == "__main__":
+    set_config(transform_output="polars")
+    config = get_config(analysis="metadata")
+    make_metadata(config=config)

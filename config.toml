@@ -1,25 +1,25 @@
 fast_dev_run = false
 random_seed = 42
-regenerate = false
-tune = false
+regenerate = true
+tune = true
 log = false
-predict = false
-evaluate = false
-shap = false
+predict = true
+evaluate = true
+shap = true
 plot = true
-tables = false
+tables = true
 verbose = false
 n_trials = 32
-n_bootstraps = 100
+n_bootstraps = 1000
 join_on = ["src_subject_id", "eventname"]
-factor_models = ["within_event"] #, "across_event"]
+factor_models = ["within_event", "across_event"]
 analyses = [
-    # "questions",
+    "questions",
     "questions_mri",
-    # "questions_symptoms",
+    "questions_symptoms",
     "symptoms",
     "questions_mri_symptoms",
-    # "autoregressive",
+    "autoregressive",
 ]
 device = "mps"
 

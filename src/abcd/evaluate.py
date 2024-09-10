@@ -63,7 +63,6 @@ def make_curve(df: pl.DataFrame, curve: Callable, name: str):
         )
         dfs.append(curve_df)
     df = pl.concat(dfs)
-
     return df
 
 
@@ -115,10 +114,10 @@ def make_metrics(df: pl.DataFrame, n_bootstraps: int):
 
 def calc_sensitivity_and_specificity(df: pl.DataFrame):
     df = df.filter(
-        pl.col("Variable").eq("Quartile subset") & pl.col("Group").eq("{1,2,3}")
+        pl.col("Variable").eq("High-risk scenario") & pl.col("Group").eq("Conversion")
     )
     outputs, labels = get_predictions(df=df)
-    min_sensitivity = 0.8
+    min_sensitivity = 0.5
     specificity_metric = MulticlassSpecificityAtSensitivity(
         num_classes=outputs.shape[-1], min_sensitivity=min_sensitivity
     )
@@ -132,7 +131,7 @@ def calc_sensitivity_and_specificity(df: pl.DataFrame):
             "Threshold": threshold[1].numpy().round(decimals=2),
         }
     )
-    min_specificity = 0.8
+    min_specificity = 0.5
     sensitivity_metric = MulticlassSensitivityAtSpecificity(
         num_classes=outputs.shape[-1], min_specificity=min_specificity
     )
@@ -169,12 +168,12 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         df = pl.read_parquet(config.filepaths.data.results.predictions)
     df = df.with_columns(
         pl.when(pl.col("Quartile at t").eq(4))
-        .then(pl.lit("{4}"))
-        .otherwise(pl.lit("{1,2,3}"))
-        .alias("Quartile subset")
+        .then(pl.lit("Persistence"))
+        .otherwise(pl.lit("Conversion"))
+        .alias("High-risk scenario")
     )
     variables = [
-        "Quartile subset",
+        "High-risk scenario",
         "Sex",
         "Race",
         "Age",
@@ -188,8 +187,8 @@ def evaluate_model(data_module: ABCDDataModule, config: Config, model: Network):
         variable_name="Variable",
         value_name="Group",
     )
-    df_all = df.filter(pl.col("Variable").eq("Quartile subset")).with_columns(
-        pl.lit("{1,2,3,4}").alias("Group")
+    df_all = df.filter(pl.col("Variable").eq("High-risk scenario")).with_columns(
+        pl.lit("Agnostic").alias("Group")
     )
     df = pl.concat([df_all, df]).drop_nulls("Group")
     grouped_df = df.group_by("Variable", "Group", maintain_order=True)

@@ -108,30 +108,25 @@ def demographic_counts():
 
 
 def shap_table(analysis: str, factor_model: str):
-    df = pl.read_csv(f"data/analyses/{factor_model}/{analysis}/results/shap_coefs.csv")
-    variables = pl.read_csv("data/supplement/files/supplemental_file_1.csv").rename(
-        {"column": "variable"}
-    )
-    df = df.group_by("variable").agg(
-        pl.col("value").mean().alias("shap_coef_mean"),
-        pl.col("value").std().alias("shap_coef_std"),
-    )
     columns = [
         "dataset",
         "table",
         "respondent",
-        "variable",
-        "shap_coef_mean",
-        "shap_coef_std",
         "question",
         "response",
     ]
+    df = pl.read_csv(
+        f"data/analyses/{factor_model}/{analysis}/results/shap_values.csv"
+    ).rename({"Respondent": "respondent"})
     df = (
-        df.join(variables, on="variable", how="left")
-        .select(columns)
-        .sort(["dataset", "table", "respondent", "variable"])
-    )
-    df.write_csv("data/tables/shap_coefs.csv")
+        df.group_by("variable")
+        .agg(
+            pl.col(columns).first(),
+            pl.col("shap_value").sum().alias("shap_value"),
+        )
+        .sort(pl.col("shap_value").abs(), descending=True)
+    ).select(["variable"] + columns + ["shap_value"])
+    df.write_csv("data/supplement/tables/supplemental_table_4.csv")
 
 
 def aggregate_metrics(analyses: list[str], factor_models: list[str]):
@@ -150,12 +145,12 @@ def aggregate_metrics(analyses: list[str], factor_models: list[str]):
         pl.concat(metrics).with_columns(
             pl.col("Predictor set").replace(
                 {
-                    "questions": "{Questions}",
-                    "symptoms": "{CBCL scales}",
-                    "questions_symptoms": "{Questions, CBCL scales}",
-                    "questions_mri": "{Questions, MRI}",
-                    "questions_mri_symptoms": "{Questions, MRI, CBCL scales}",
-                    "autoregressive": "{Previous p-factors}",
+                    "questions": "Questionnaires",
+                    "symptoms": "CBCL scales",
+                    "questions_symptoms": "Questionnaires, CBCL scales",
+                    "questions_mri": "Questionnaires, MRI",
+                    "questions_mri_symptoms": "Questionnaires, MRI, CBCL scales",
+                    "autoregressive": "Previous p-factors",
                 }
             ),
             pl.col("Factor model").replace(
@@ -199,18 +194,27 @@ def make_metric_table(df: pl.LazyFrame, groups: list[str]):
 
 
 def quartile_metric_table(df: pl.LazyFrame):
-    return df.filter(
-        pl.col("Variable").eq("Quartile subset")
-        & pl.col("Predictor set").is_in(["{CBCL scales}", "{Questions}"])
-        & pl.col("Factor model").eq("Within-event")
-    ).drop("Factor model", "Variable")
+    return (
+        df.filter(
+            pl.col("Variable").eq("High-risk scenario")
+            & pl.col("Predictor set").is_in(["Questionnaires", "CBCL scales"])
+            & pl.col("Factor model").eq("Within-event")
+        )
+        .with_columns(
+            pl.col("Group").cast(pl.Enum(["Conversion", "Persistence", "Agnostic"])),
+            pl.col("Predictor set").cast(pl.Enum(["Questionnaires", "CBCL scales"])),
+        )
+        .drop("Factor model", "Variable")
+        .sort("Predictor set", "Metric", "Group")
+        .rename({"Group": "High-risk scenario"})
+    )
 
 
 def demographic_metric_table(df: pl.LazyFrame):
     return (
         df.filter(
-            pl.col("Variable").ne("Quartile subset")
-            & pl.col("Predictor set").eq("{CBCL scales}")
+            pl.col("Variable").ne("High-risk scenario")
+            & pl.col("Predictor set").eq("Questionnaires")
             & pl.col("Factor model").eq("Within-event")
         )
         .drop("Factor model", "Predictor set")
@@ -218,34 +222,20 @@ def demographic_metric_table(df: pl.LazyFrame):
     )
 
 
-def threshold_table():
-    (
-        pl.read_parquet("data/results/metrics/sensitivity_specificity.parquet")
-        .filter(
-            pl.col("Predictor set").is_in(["{CBCL scales}", "{Questions}"])
-            & pl.col("Factor model").eq("Within-event")
-        )
-        .drop("Factor model")
-        .select(["Predictor set", "Risk", "Metric", "Minimum", "Value", "Threshold"])
-        .sort("Predictor set")
-    ).write_csv("data/supplement/tables/supplemental_table_3.csv")
-
-
 def make_tables(config: Config):
-    # cross_tabulation()
-    # demographic_counts()
+    cross_tabulation()
+    demographic_counts()
     aggregate_metrics(analyses=config.analyses, factor_models=config.factor_models)
-    # df = pl.scan_parquet("data/results/metrics/metrics.parquet")
-    # groups = ["Factor model", "Predictor set", "Metric", "Variable", "Group"]
-    # make_metric_table(df=df, groups=groups)
-    # metric_table = pl.scan_parquet("data/results/metrics/metric_summary.parquet")
-    # metric_table.sink_csv("data/supplement/tables/supplemental_table_2.csv")
-    # quartile_metrics = quartile_metric_table(df=metric_table)
-    # quartile_metrics.collect().write_csv("data/tables/table_2.csv")
-    # demographic_metrics = demographic_metric_table(df=metric_table)
-    # demographic_metrics.collect().write_csv("data/tables/table_3.csv")
-    threshold_table()
-    # shap_table(analysis="questions_mri", factor_model="within_event")
+    df = pl.scan_parquet("data/results/metrics/metrics.parquet")
+    groups = ["Factor model", "Predictor set", "Metric", "Variable", "Group"]
+    make_metric_table(df=df, groups=groups)
+    metric_table = pl.scan_parquet("data/results/metrics/metric_summary.parquet")
+    metric_table.sink_csv("data/supplement/tables/supplemental_table_2.csv")
+    quartile_metrics = quartile_metric_table(df=metric_table)
+    quartile_metrics.collect().write_csv("data/tables/table_2.csv")
+    demographic_metrics = demographic_metric_table(df=metric_table)
+    demographic_metrics.collect().write_csv("data/tables/table_3.csv")
+    shap_table(analysis="questions", factor_model="within_event")
 
 
 if __name__ == "__main__":
