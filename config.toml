@@ -58,7 +58,7 @@ momentum = 0.99
 nesterov = true
 [optimizer.lr]
 low = 1e-4
-high = 1e-1
+high = 1e-2
 log = true
 [optimizer.weight_decay]
 low = 1e-8

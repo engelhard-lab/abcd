@@ -1,11 +1,14 @@
 from itertools import product
 import polars as pl
-from tqdm import tqdm
+import polars.selectors as cs
 
 from abcd.config import Config, get_config
 
-group_order = pl.Enum(
+GROUP_ORDER = pl.Enum(
     [
+        "Conversion",
+        "Persistence",
+        "Agnostic",
         "1",
         "2",
         "3",
@@ -36,20 +39,22 @@ group_order = pl.Enum(
     ]
 )
 
+RISK_GROUPS = {
+    "1": "No risk",
+    "2": "Low risk",
+    "3": "Moderate risk",
+    "4": "High risk",
+}
+
 
 def cross_tabulation():
     df = pl.read_csv("data/raw/metadata.csv")
-    risk_groups = {
-        "1": "No risk",
-        "2": "Low risk",
-        "3": "Moderate risk",
-        "4": "High risk",
-    }
+
     variables = ["Sex", "Age", "Race", "Follow-up event", "Event year", "ADI quartile"]
     columns = ["Variable", "Group", "No risk", "Low risk", "Moderate risk", "High risk"]
     df = (
         df.select(["Quartile at t+1"] + variables)
-        .with_columns(pl.col("Quartile at t+1").replace_strict(risk_groups))
+        .with_columns(pl.col("Quartile at t+1").replace_strict(RISK_GROUPS))
         .unpivot(index="Quartile at t+1", on=variables)
         .group_by("Quartile at t+1", "variable", "value")
         .len()
@@ -78,93 +83,49 @@ def cross_tabulation():
             pl.exclude("Variable", "Group").cast(pl.String) + " (" + percent + "%)"
         )
         .drop_nulls()
-        .sort("Variable", pl.col("Group").cast(group_order, strict=False))
+        .sort("Variable", pl.col("Group").cast(GROUP_ORDER, strict=False))
     )
-    df.write_csv("data/tables/table_1.csv")
-
-
-def demographic_counts():
-    columns = ["Subject ID", "Sex", "Race", "ADI quartile"]
-    df = pl.read_csv("data/raw/metadata.csv").select(columns).unique(columns)
-    n = df["Subject ID"].n_unique()
-    df = (
-        df.melt(id_vars="Subject ID")
-        .group_by("variable")
-        .agg(pl.col("value").value_counts())
-        .explode("value")
-        .unnest("value")
-        .with_columns(
-            pl.col("count")
-            .truediv(n)
-            .mul(100)
-            .round(1)
-            .cast(pl.String)
-            .add("%")
-            .alias("percentage")
-        )
-        .sort("variable", "value")
-        .write_csv("data/supplement/tables/supplemental_table_1.csv")
-    )
-
-
-def shap_table(analysis: str, factor_model: str):
-    columns = [
-        "dataset",
-        "table",
-        "respondent",
-        "question",
-        "response",
-    ]
-    df = pl.read_csv(
-        f"data/analyses/{factor_model}/{analysis}/results/shap_values.csv"
-    ).rename({"Respondent": "respondent"})
-    df = (
-        df.group_by("variable")
-        .agg(
-            pl.col(columns).first(),
-            pl.col("shap_value").sum().alias("shap_value"),
-        )
-        .sort(pl.col("shap_value").abs(), descending=True)
-    ).select(["variable"] + columns + ["shap_value"])
-    df.write_csv("data/supplement/tables/supplemental_table_4.csv")
+    return df
 
 
 def aggregate_metrics(analyses: list[str], factor_models: list[str]):
     for metric_type in ("sensitivity_specificity", "curves", "metrics"):
         metrics = []
-        progress_bar = tqdm(
-            product(analyses, factor_models), total=len(analyses) * len(factor_models)
-        )
-        for analysis, factor_model in progress_bar:
+        for analysis, factor_model in product(analyses, factor_models):
             path = f"data/analyses/{factor_model}/{analysis}/results/metrics/{metric_type}.csv"
-            metric = pl.scan_csv(path).with_columns(
-                pl.lit(factor_model).alias("Factor model"),
-                pl.lit(analysis).alias("Predictor set"),
+            metric = (
+                pl.scan_csv(path)
+                .with_columns(
+                    pl.lit(factor_model).alias("Factor model"),
+                    pl.lit(analysis).alias("Predictor set"),
+                )
+                .with_columns(
+                    pl.col("Predictor set").replace(
+                        {
+                            "questions": "Questionnaires",
+                            "symptoms": "CBCL scales",
+                            "questions_symptoms": "Questionnaires, CBCL scales",
+                            "questions_mri": "Questionnaires, MRI",
+                            "questions_mri_symptoms": "Questionnaires, MRI, CBCL scales",
+                            "autoregressive": "Previous p-factors",
+                        }
+                    ),
+                    pl.col("Factor model").replace(
+                        {"within_event": "Within-event", "across_event": "Across-event"}
+                    ),
+                )
+                .with_columns(
+                    cs.numeric().shrink_dtype(), cs.string().cast(pl.Categorical)
+                )
             )
             metrics.append(metric)
-        pl.concat(metrics).with_columns(
-            pl.col("Predictor set").replace(
-                {
-                    "questions": "Questionnaires",
-                    "symptoms": "CBCL scales",
-                    "questions_symptoms": "Questionnaires, CBCL scales",
-                    "questions_mri": "Questionnaires, MRI",
-                    "questions_mri_symptoms": "Questionnaires, MRI, CBCL scales",
-                    "autoregressive": "Previous p-factors",
-                }
-            ),
-            pl.col("Factor model").replace(
-                {"within_event": "Within-event", "across_event": "Across-event"}
-            ),
-        ).sink_parquet(f"data/results/metrics/{metric_type}.parquet")
+        pl.concat(metrics).collect().write_parquet(
+            f"data/results/metrics/{metric_type}.parquet"
+        )
 
 
 def make_metric_table(df: pl.LazyFrame, groups: list[str]):
-    group_order = [
-        pl.col("Group").cast(pl.Int32, strict=False) if group == "Group" else group
-        for group in groups
-    ]
-    return (
+    (
         df.group_by(groups + ["Quartile at t+1"], maintain_order=True)
         .agg(
             pl.col("Prevalence").first(),
@@ -183,17 +144,17 @@ def make_metric_table(df: pl.LazyFrame, groups: list[str]):
         .sort("Quartile at t+1")
         .collect()
         .pivot(on="Quartile at t+1", values="value", index=groups)
-        .rename(
-            {"1": "No risk", "2": "Low risk", "3": "Moderate risk", "4": "High risk"}
+        .rename(RISK_GROUPS)
+        .with_columns(
+            pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])),
+            pl.col("Group").cast(GROUP_ORDER),
         )
-        .with_columns(pl.col("Metric").cast(pl.Enum(["AUROC", "AP"])))
-        .sort(group_order)
-        .lazy()
-        .sink_parquet("data/results/metrics/metric_summary.parquet")
+        .sort("Factor model", "Predictor set", "Metric", "Group")
+        .write_parquet("data/results/metrics/metric_summary.parquet")
     )
 
 
-def quartile_metric_table(df: pl.LazyFrame):
+def quartile_metric_table(df: pl.DataFrame):
     return (
         df.filter(
             pl.col("Variable").eq("High-risk scenario")
@@ -205,12 +166,12 @@ def quartile_metric_table(df: pl.LazyFrame):
             pl.col("Predictor set").cast(pl.Enum(["Questionnaires", "CBCL scales"])),
         )
         .drop("Factor model", "Variable")
-        .sort("Predictor set", "Metric", "Group")
+        .sort("Predictor set", "Metric", pl.col("Group").cast(GROUP_ORDER))
         .rename({"Group": "High-risk scenario"})
     )
 
 
-def demographic_metric_table(df: pl.LazyFrame):
+def demographic_metric_table(df: pl.DataFrame):
     return (
         df.filter(
             pl.col("Variable").ne("High-risk scenario")
@@ -218,24 +179,53 @@ def demographic_metric_table(df: pl.LazyFrame):
             & pl.col("Factor model").eq("Within-event")
         )
         .drop("Factor model", "Predictor set")
-        .sort("Metric", "Variable", pl.col("Group").cast(group_order))
+        .sort("Metric", "Variable", pl.col("Group").cast(GROUP_ORDER))
     )
 
 
+def make_shap_table(analysis: str, factor_model: str):
+    columns = [
+        "dataset",
+        "table",
+        "respondent",
+        "question",
+        "response",
+    ]
+    df = pl.read_csv(
+        f"data/analyses/{factor_model}/{analysis}/results/shap_values.csv"
+    ).rename({"Respondent": "respondent"})
+    df = (
+        df.group_by("variable")
+        .agg(
+            pl.col(columns).first(),
+            pl.col("shap_value").sum().alias("shap_value"),
+        )
+        .sort(pl.col("shap_value").abs(), descending=True)
+    ).select(["variable"] + columns + ["shap_value"])
+    return df
+
+
 def make_tables(config: Config):
-    cross_tabulation()
-    demographic_counts()
+    cross_tab = cross_tabulation()
     aggregate_metrics(analyses=config.analyses, factor_models=config.factor_models)
     df = pl.scan_parquet("data/results/metrics/metrics.parquet")
     groups = ["Factor model", "Predictor set", "Metric", "Variable", "Group"]
     make_metric_table(df=df, groups=groups)
-    metric_table = pl.scan_parquet("data/results/metrics/metric_summary.parquet")
-    metric_table.sink_csv("data/supplement/tables/supplemental_table_2.csv")
+    metric_table = pl.read_parquet("data/results/metrics/metric_summary.parquet")
     quartile_metrics = quartile_metric_table(df=metric_table)
-    quartile_metrics.collect().write_csv("data/tables/table_2.csv")
     demographic_metrics = demographic_metric_table(df=metric_table)
-    demographic_metrics.collect().write_csv("data/tables/table_3.csv")
-    shap_table(analysis="questions", factor_model="within_event")
+    variable_metadata = pl.read_csv("data/raw/variable_metadata.csv")
+    # aces = pl.read_excel("data/raw/ABCD_ACEs.xlsx")
+    shap_table = make_shap_table(analysis="questions", factor_model="within_event")
+
+    cross_tab.write_excel("data/tables/table_1.xlsx")
+    quartile_metrics.write_excel("data/tables/table_2.xlsx")
+    demographic_metrics.write_excel("data/tables/table_3.xlsx")
+
+    variable_metadata.write_excel("data/supplement/tables/supplementary_table_1.xlsx")
+    # aces.write_excel("data/supplement/tables/supplementary_table_2.xlsx")
+    metric_table.write_excel("data/supplement/tables/supplementary_table_3.xlsx")
+    shap_table.write_excel("data/supplement/tables/supplementary_table_4.xlsx")
 
 
 if __name__ == "__main__":

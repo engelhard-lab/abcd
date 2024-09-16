@@ -20,17 +20,17 @@ def make_predictions(config: Config, model: Network, data_module: ABCDDataModule
     trainer = make_trainer(config, checkpoint=False)
     predictions = trainer.predict(model, dataloaders=data_module.test_dataloader())
     outputs, labels = zip(*predictions)
-    outputs = torch.concat(outputs)
-    labels = torch.concat(labels)
+    outputs = torch.concat(outputs).cpu()
+    labels = torch.concat(labels).cpu()
     metadata = pl.read_csv(config.filepaths.data.raw.metadata)
     test_metadata = metadata.filter(pl.col("Split").eq("test"))
     df = pl.DataFrame({"output": outputs.cpu().numpy(), "label": labels.cpu().numpy()})
     return pl.concat([test_metadata, df], how="horizontal")
 
 
-def get_predictions(df: pl.DataFrame, device: str = "cpu"):
-    outputs = torch.tensor(df["output"].to_list(), dtype=torch.float, device=device)
-    labels = torch.tensor(df["label"].to_numpy(), dtype=torch.long, device=device)
+def get_predictions(df: pl.DataFrame):
+    outputs = torch.tensor(df["output"].to_list(), dtype=torch.float)
+    labels = torch.tensor(df["label"].to_numpy(), dtype=torch.long)
     return outputs, labels
 
 
@@ -70,7 +70,6 @@ def bootstrap_metric(metric, outputs, labels, n_bootstraps: int):
     bootstrap = BootStrapper(
         metric, num_bootstraps=n_bootstraps, mean=False, std=False, raw=True
     )
-    bootstrap.to(outputs.device)
     bootstrap.update(outputs, labels)
     bootstraps = bootstrap.compute()["raw"].cpu().numpy()
     columns = [str(i) for i in range(1, outputs.shape[-1] + 1)]

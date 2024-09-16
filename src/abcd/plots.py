@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
 from toml import load
+import polars.selectors as cs
 
 import textwrap
 from abcd.config import Config
@@ -24,6 +25,7 @@ def quartile_curves():
         .with_columns(
             pl.col("Metric").cast(pl.Enum(["ROC", "PR"])),
             pl.col("Group").cast(pl.Enum(["Conversion", "Persistence", "Agnostic"])),
+            pl.col("Predictor set").cast(pl.String),
         )
         .sort("Predictor set", "Metric", "Group", "y")
     )
@@ -65,50 +67,6 @@ def quartile_curves():
     plt.savefig(f"data/figures/figure_1.{FORMAT}", format=FORMAT)
 
 
-def cbcl_distributions(config: Config):
-    cbcl_scales = config.features.mh_p_cbcl.columns
-    cbcl_names = [
-        "Anxious/Depressed",
-        "Withdrawn/Depressed",
-        "Somatic Complaints",
-        "Social Problems",
-        "Thought Problems",
-        "Attention Problems",
-        "Rule-Breaking Behavior",
-        "Aggressive Behavior",
-    ]
-    name_mapping = dict(zip(cbcl_scales, cbcl_names))
-    df = (
-        pl.read_csv(
-            "data/analyses/within_event/symptoms/analytic/train.csv",
-            columns=["src_subject_id", "y_{t+1}"] + cbcl_scales,
-        )
-        .rename({"y_{t+1}": "p-factor quartile"})
-        .unpivot(index="p-factor quartile", on=cbcl_scales)
-        .rename({"variable": "CBCL scale", "value": "t-score"})
-        .with_columns(
-            pl.col("CBCL scale").replace(name_mapping),
-            pl.col("p-factor quartile").add(1).cast(pl.Int32),
-        )
-    )
-    sns.set_theme(font_scale=2.0)
-    g = sns.catplot(
-        data=df.to_pandas(),
-        x="p-factor quartile",
-        y="t-score",
-        col="CBCL scale",
-        kind="boxen",
-        col_wrap=4,
-        height=6,
-    )
-    g.set_titles("{col_name}")
-    plt.savefig(
-        f"data/supplement/figures/supplemental_figure_x.{FORMAT}",
-        format=FORMAT,
-        bbox_inches="tight",
-    )
-
-
 RISK_MAPPING = {1: "None", 2: "Low", 3: "Moderate", 4: "High"}
 
 
@@ -135,34 +93,7 @@ def analysis_comparison():
     g.set(ylim=(0.5, 1.0))
     g.set_axis_labels("Risk", "AUROC")
     plt.savefig(
-        f"data/supplement/figures/supplemental_figure_1.{FORMAT}",
-        format=FORMAT,
-        bbox_inches="tight",
-    )
-
-
-def p_factor_model_comparison():
-    df = pl.read_parquet("data/results/metrics/metrics.parquet")
-    df = df.filter(
-        pl.col("Predictor set").is_in(["Questionnaires", "CBCL scales"])
-        & pl.col("Group").eq("Conversion")
-        & pl.col("Metric").eq("AUROC")
-    ).with_columns(pl.col("Quartile at t+1").replace_strict(RISK_MAPPING))
-    g = sns.catplot(
-        data=df.to_pandas(),
-        x="Quartile at t+1",
-        y="value",
-        kind="bar",
-        hue="Factor model",
-        col="Predictor set",
-        errorbar="pi",
-    )
-    g.set(ylim=(0.5, 1.0))
-    g.set_axis_labels("Risk group", "AUROC")
-    for ax in g.axes.flat:
-        ax.axhline(0.5, color="black", linestyle="--")
-    plt.savefig(
-        f"data/supplement/figures/supplemental_figure_2.{FORMAT}",
+        f"data/supplement/figures/supplementary_figure_1.{FORMAT}",
         format=FORMAT,
         bbox_inches="tight",
     )
@@ -230,7 +161,6 @@ def shap_plot(
         xlabel="SHAP value",
         ylabel=y_axis_label,
     )
-    # g.autoscale(enable=True)
     g.set_yticks(g.get_yticks())
     labels = [
         textwrap.fill(label.get_text(), textwrap_width) for label in g.get_yticklabels()
@@ -279,6 +209,44 @@ def grouped_shap_plot(filepath: str, analysis: str, factor_model: str):
     plt.savefig(f"{filepath}.{FORMAT}", format=FORMAT)
 
 
+def p_factor_model_comparison():
+    df = pl.read_parquet("data/results/metrics/metrics.parquet")
+    df = (
+        df.filter(
+            pl.col("Predictor set").is_in(["Questionnaires", "CBCL scales"])
+            & pl.col("Group").eq("Conversion")
+            & pl.col("Metric").eq("AUROC")
+        )
+        .drop("Metric", "Group")
+        .with_columns(
+            pl.col("Quartile at t+1")
+            .replace_strict(RISK_MAPPING)
+            .cast(pl.Enum(["None", "Low", "Moderate", "High"]))
+        )
+        .sort("Quartile at t+1")
+        .unique()
+        .with_columns(cs.categorical().cast(pl.String))
+    )
+    g = sns.catplot(
+        data=df.to_pandas(),
+        x="Quartile at t+1",
+        y="value",
+        kind="bar",
+        hue="Factor model",
+        col="Predictor set",
+        errorbar="pi",
+    )
+    g.set(ylim=(0.5, 1.0))
+    g.set_axis_labels("Risk group", "AUROC")
+    for ax in g.axes.flat:
+        ax.axhline(0.5, color="black", linestyle="--")
+    plt.savefig(
+        f"data/supplement/figures/supplementary_figure_4.{FORMAT}",
+        format=FORMAT,
+        bbox_inches="tight",
+    )
+
+
 def plot(config):
     sns.set_theme(style="darkgrid", palette="deep", font_scale=2.0)
     sns.set_context("paper", font_scale=2.0)
@@ -289,26 +257,24 @@ def plot(config):
         analysis="questions",
         factor_model="within_event",
     )
-
     analysis_comparison()
-    p_factor_model_comparison()
     shap_plot(
-        filepath="data/supplement/figures/supplemental_figure_3",
-        analysis="questions",
-        factor_model="within_event",
-        textwrap_width=75,
-        y_axis_label="Question",
-        figsize=(24, 16),
-    )
-    shap_plot(
-        filepath="data/supplement/figures/supplemental_figure_4",
+        filepath="data/supplement/figures/supplementary_figure_2",
         analysis="symptoms",
         factor_model="within_event",
         textwrap_width=75,
         y_axis_label="CBCL syndrome scale (t-score)",
         figsize=(16, 8),
     )
-    cbcl_distributions(config=config)
+    shap_plot(
+        filepath="data/supplement/figures/supplementary_figure_3",
+        analysis="questions",
+        factor_model="within_event",
+        textwrap_width=75,
+        y_axis_label="Question",
+        figsize=(24, 16),
+    )
+    p_factor_model_comparison()
 
 
 if __name__ == "__main__":
